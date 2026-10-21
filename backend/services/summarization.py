@@ -1,5 +1,6 @@
+import json
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from backend.services.medgemma import medgemma_service, ModelInferenceError
 from backend.schemas.clinical import ClinicalSummaryOutput
 
@@ -50,9 +51,13 @@ class ClinicalSummarizationService:
     """Service producing factual, evidence-grounded clinical summaries."""
 
     @staticmethod
-    def generate_summary(patient_messages: List[str]) -> ClinicalSummaryOutput:
+    def generate_summary(
+        patient_messages: List[str],
+        evidence_state: Optional[Dict[str, Any]] = None
+    ) -> ClinicalSummaryOutput:
         """
         Calls MedGemma to generate an evidence-grounded clinical summary.
+        Integrates structured evidence facts to guarantee no reported information is lost.
         """
         user_content_blocks = [
             f"<patient_utterance>{msg.strip()}</patient_utterance>"
@@ -62,6 +67,10 @@ class ClinicalSummarizationService:
             "Produce an evidence-grounded clinical summary for the following patient intake conversation:\n\n"
             + "\n".join(user_content_blocks)
         )
+
+        if evidence_state:
+            facts = evidence_state.get("facts", {})
+            user_prompt += f"\n\n<structured_evidence_facts>\n{json.dumps(facts, indent=2)}\n</structured_evidence_facts>"
 
         try:
             raw_json = medgemma_service.generate_json(

@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # -------------------------------------------------------------
 # Evidence & Extraction Schemas
@@ -108,6 +108,18 @@ class CaseCreateRequest(BaseModel):
 
 class MessageCreateRequest(BaseModel):
     content: str = Field(..., min_length=1, description="Patient message text")
+    raw_transcript: Optional[str] = Field(None, description="Original unedited transcript before patient edits")
+    source_type: Optional[str] = Field("patient_typed", description="Origin: patient_typed, voice_transcript, ocr_extraction")
+    source_language: Optional[str] = Field(None, description="Source language code")
+    transcription_confidence: Optional[float] = Field(None, description="Confidence if from ASR/OCR")
+    is_confirmed: Optional[bool] = Field(True, description="Whether confirmed by patient")
+
+    @field_validator("content")
+    @classmethod
+    def validate_content_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Message content cannot be empty or whitespace only.")
+        return v
 
 
 class CaseReviewRequest(BaseModel):

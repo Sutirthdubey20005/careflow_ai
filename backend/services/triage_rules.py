@@ -53,10 +53,10 @@ class DeterministicTriageEngine:
         },
         {
             "id": "RULE-P0-HEM-04",
-            "name": "Severe Hemorrhage or Vascular Collapse",
-            "criterion": "Uncontrolled bleeding, vomiting blood, or sudden syncope with chest/back pain",
-            "pattern": r"(vomiting\s*blood|coughing\s*up\s*blood|uncontrolled\s*bleeding|passed\s*out|syncope|खून\s*की\s*उल्टी|बेहोश|khoon\s*ki\s*ulti|behosh)",
-            "action": "Immediate resuscitation and surgical/trauma evaluation."
+            "name": "Severe Hemorrhage or Hematemesis",
+            "criterion": "Active hematemesis (vomiting blood), coughing up blood, uncontrolled bleeding, or sudden syncope",
+            "pattern": r"(?:vomit(?:ing|ed)?\s*blood|throwing\s*up\s*blood|threw\s*up\s*blood|blood\s*in\s*(?:my\s*)?vomit|hematemesis|coffee[\s\-]ground\s*(?:emesis|vomit)|coughing\s*up\s*blood|hemoptysis|uncontrolled\s*bleeding|passed\s*out|syncope|खून\s*की\s*उल्टी|उल्टी\s*में\s*खून|उल्टी\s*के\s*साथ\s*खून|रक्त\s*वमन|बेहोश|khoon\s*ki\s*ulti|ulti\s*me(?:n)?\s*(?:khoon|blood)|behosh)",
+            "action": "Immediate resuscitation, airway protection, and emergency surgical/endoscopic evaluation."
         },
         {
             "id": "RULE-P0-ANAPH-05",
@@ -79,9 +79,16 @@ class DeterministicTriageEngine:
         {
             "id": "RULE-P1-PAIN-02",
             "name": "Severe Uncontrolled Pain",
-            "criterion": "Reported pain severity >= 8/10",
-            "pattern": r"(\b[89]|10)\s*(?:out\s*of\s*10|/10)|severe\s*unbearable\s*pain|असहनीय\s*दर्द|बहुत\s*तेज\s*दर्द|bahut\s*tez\s*dard",
+            "criterion": "Reported pain severity >= 8/10 or severe/unbearable pain",
+            "pattern": r"(?:\b([89]|10)\s*(?:out\s*of\s*10|/10|\s*/\s*10|out\s*of\s*ten)\b|\b(?:pain|severity|scale|level|dard|rating)\s*(?:is|=|:)?\s*([89]|10)\b|\b([89]|10)\s*(?:pain|severity|level|rating|dard)\b|(?:severe|unbearable|very\s*high|high|extreme|excruciating)\s+(?:pain|headache|headahed|chest\s*pain|abdominal\s*pain|stomach\s*pain|back\s*pain|cramps|ache)|severe\s*unbearable\s*pain|unbearable\s*pain|excruciating\s*pain|असहनीय\s*दर्द|बहुत\s*(?:ज़्यादा|ज्यादा|तेज़|तेज)\s*दर्द|बहुत\s*(?:shar\s*|sar\s*|sir\s*)?dard|bahut\s*(?:zyada\s*|jada\s*|tez\s*)?(?:shar\s*|sar\s*|sir\s*)?dard)",
             "action": "Urgent clinical review for acute pain etiology and analgesia."
+        },
+        {
+            "id": "RULE-P1-CARD-05",
+            "name": "Acute Central Chest Pain or Pressure",
+            "criterion": "New or acute chest pain, tightness, or cardiac discomfort without confirmed radiation",
+            "pattern": r"(chest\s*pain|pressure\s*in\s*chest|chest\s*tightness|tightness\s*in\s*(?:my\s*)?chest|lower\s*chest\s*is\s*paining|सीने\s*में\s*(?:.{0,25}?)(?:दर्द|दबाव|भारी)|छाती\s*में\s*(?:.{0,25}?)(?:दर्द|दबाव)|सीना\s*भारी|chhati\s*me\s*(?:.{0,25}?)(?:dard|dabav)|seene\s*me\s*(?:.{0,25}?)(?:dard|dabav)|dil\s*me\s*(?:.{0,25}?)(?:dard|pain)|दिल\s*में\s*(?:.{0,25}?)(?:दर्द))",
+            "action": "Urgent clinical and ECG evaluation within 30-60 minutes."
         },
         {
             "id": "RULE-P1-ABD-03",
@@ -96,8 +103,50 @@ class DeterministicTriageEngine:
             "criterion": "Shortness of breath with fever or cough, without immediate collapse",
             "pattern": r"(shortness\s*of\s*breath|trouble\s*breathing|सांस\s*लेने\s*में\s*परेशानी).*(fever|cough|बुखार|खांसी)|(fever|cough|बुखार|खांसी).*(shortness\s*of\s*breath|trouble\s*breathing)",
             "action": "Urgent chest evaluation and pulse oximetry."
+        },
+        {
+            "id": "RULE-P1-GI-06",
+            "name": "Suspected Gastrointestinal Bleeding",
+            "criterion": "Dark black tarry stools (melena) or suspected gastrointestinal bleeding",
+            "pattern": r"(?:black\s*tarry\s*stool|melena|dark\s*black\s*stool|काला\s*मल|kali\s*latrine|latrine\s*me\s*khoon)",
+            "action": "Urgent physician assessment, IV access, and GI endoscopy consultation within 1 to 2 hours."
         }
     ]
+
+    @staticmethod
+    def _is_negated(match: re.Match, text: str) -> bool:
+        """Determines if a matched symptom pattern is explicitly negated in context."""
+        start = match.start()
+        end = match.end()
+        pre_text = text[max(0, start - 45):start].lower()
+        post_text = text[end:min(len(text), end + 35)].lower()
+
+        # If there is a clause boundary before the match, only inspect the current clause
+        clause_break = max(
+            pre_text.rfind("."), pre_text.rfind(";"), pre_text.rfind("!"),
+            pre_text.rfind(" but "), pre_text.rfind(" however "), pre_text.rfind(" lekin "), pre_text.rfind(" par ")
+        )
+        if clause_break != -1:
+            pre_text = pre_text[clause_break:]
+
+        # Prefix negation in English/Hindi/Hinglish
+        if re.search(r"\b(no|not|without|denies|denied|never|none|zero)\b(?:\s+\w+){0,3}\s*$", pre_text.strip()):
+            return True
+        if re.search(r"(नहीं|न|कोई नहीं|बिना)\s*$", pre_text.strip()):
+            return True
+        if re.search(r"\b(nahi|nahin|na)\b(?:\s+\w+){0,2}\s*$", pre_text.strip()):
+            return True
+
+        # Postfix negation in Hindi/Hinglish/English
+        post_clause_break = min(
+            [pos for pos in [post_text.find("."), post_text.find(";"), post_text.find("!"), post_text.find(" but "), post_text.find(" lekin ")] if pos != -1] or [len(post_text)]
+        )
+        post_clause = post_text[:post_clause_break].strip()
+
+        if re.search(r"^\s*(?:nahi\b|nahin\b|nai\b|absent\b|resolved\b|is not present\b|nahi hai|nahin hai|nai hai|नहीं|नहीं है|नहीं हुई|न है)", post_clause):
+            return True
+
+        return False
 
     def evaluate(
         self,
@@ -159,8 +208,9 @@ class DeterministicTriageEngine:
 
         # 3. Check Protocol-Based P0 Emergency Rules
         for rule in self.P0_RULES:
-            match = re.search(rule["pattern"], all_patient_text)
-            if match:
+            for match in re.finditer(rule["pattern"], all_patient_text):
+                if self._is_negated(match, all_patient_text):
+                    continue
                 matched_snippet = match.group(0)
                 source_msg = next((msg for msg in raw_messages if matched_snippet in msg.lower()), matched_snippet)
                 trigger = TriageTrigger(
@@ -174,6 +224,7 @@ class DeterministicTriageEngine:
                 triggered_rules.append(trigger)
                 warning_signs.append(f"{rule['name']}: {rule['criterion']}")
                 reasons.append(f"Triggered {rule['id']} ({rule['name']}): '{source_msg[:90]}'")
+                break
 
         if triggered_rules:
             return TriageResult(
@@ -207,8 +258,9 @@ class DeterministicTriageEngine:
 
         # Evaluate Protocol-Based P1 Rules
         for rule in self.P1_RULES:
-            match = re.search(rule["pattern"], all_patient_text)
-            if match:
+            for match in re.finditer(rule["pattern"], all_patient_text):
+                if self._is_negated(match, all_patient_text):
+                    continue
                 matched_snippet = match.group(0)
                 source_msg = next((msg for msg in raw_messages if matched_snippet in msg.lower()), matched_snippet)
                 
@@ -223,6 +275,39 @@ class DeterministicTriageEngine:
                 triggered_rules.append(trigger)
                 warning_signs.append(f"{rule['name']}: {rule['criterion']}")
                 reasons.append(f"Triggered {rule['id']} ({rule['name']}): '{source_msg[:90]}'")
+                break
+
+        # Check if patient directly provided standalone severe pain score (e.g. answering severity question with '8', '9', '10')
+        standalone_high_pain = [msg.strip() for msg in raw_messages if msg.strip() in ("8", "9", "10", "8/10", "9/10", "10/10", "10 out of 10", "9 out of 10", "8 out of 10")]
+        if standalone_high_pain and not any(t.rule_id == "RULE-P1-PAIN-02" for t in triggered_rules):
+            trigger = TriageTrigger(
+                rule_id="RULE-P1-PAIN-02",
+                rule_name="Severe Uncontrolled Pain",
+                priority="P1",
+                criterion="Reported pain severity >= 8/10",
+                matched_evidence=f"Patient reported pain score: '{standalone_high_pain[-1]}'",
+                action_protocol="Urgent clinical review for acute pain etiology and analgesia."
+            )
+            triggered_rules.append(trigger)
+            warning_signs.append("Severe Uncontrolled Pain: Reported pain severity >= 8/10")
+            reasons.append(f"Triggered RULE-P1-PAIN-02 (Severe Uncontrolled Pain): '{standalone_high_pain[-1]}'")
+
+        # Check structured severity fact in evidence_state
+        facts = evidence_state.get("facts", {})
+        sev_fact = facts.get("severity", {})
+        sev_val = str(sev_fact.get("value", "") if isinstance(sev_fact, dict) else sev_fact).lower()
+        if (any(term in sev_val for term in ["8/10", "9/10", "10/10", "severe", "unbearable", "very high"]) or sev_val in ["8", "9", "10"]) and not any(t.rule_id == "RULE-P1-PAIN-02" for t in triggered_rules):
+            trigger = TriageTrigger(
+                rule_id="RULE-P1-PAIN-02",
+                rule_name="Severe Uncontrolled Pain",
+                priority="P1",
+                criterion="Extracted pain severity >= 8/10 or severe",
+                matched_evidence=f"Evidence fact severity: '{sev_val}'",
+                action_protocol="Urgent clinical review for acute pain etiology and analgesia."
+            )
+            triggered_rules.append(trigger)
+            warning_signs.append("Severe Uncontrolled Pain: Extracted pain severity >= 8/10 or severe")
+            reasons.append(f"Triggered RULE-P1-PAIN-02 (Severe Uncontrolled Pain): Severity fact '{sev_val}'")
 
         if triggered_rules:
             return TriageResult(
@@ -237,10 +322,11 @@ class DeterministicTriageEngine:
             )
 
         # 4. Evaluate P2 (Incomplete or Uncertain)
-        # Check for contradictions, unresolved uncertainties, or severe symptoms without timeline
+        # Check for contradictions, unresolved uncertainties, or multiple unknown dimensions
         contradictions = evidence_state.get("contradictions", [])
         uncertainties = evidence_state.get("uncertainties", [])
         missing_info = evidence_state.get("missing_information", [])
+        unknowns = evidence_state.get("unknown_information", [])
 
         p2_triggers = []
         if contradictions:
@@ -256,18 +342,31 @@ class DeterministicTriageEngine:
             )
             reasons.append(f"Contradictory information present: {'; '.join(contradictions)}")
 
-        if uncertainties and len(uncertainties) >= 2:
+        if uncertainties:
             p2_triggers.append(
                 TriageTrigger(
                     rule_id="RULE-P2-UNCERTAIN-02",
                     rule_name="High Clinical Uncertainty",
                     priority="P2",
-                    criterion="Multiple ambiguous or uncertain patient reports",
+                    criterion="Ambiguous or uncertain patient reports requiring clinical clarification",
                     matched_evidence="; ".join(uncertainties),
                     action_protocol="Reviewer clarification required."
                 )
             )
             reasons.append(f"High clinical uncertainty: {'; '.join(uncertainties)}")
+
+        if len(unknowns) >= 2:
+            p2_triggers.append(
+                TriageTrigger(
+                    rule_id="RULE-P2-INCOMPLETE-03",
+                    rule_name="Multiple Unknown Clinical Dimensions",
+                    priority="P2",
+                    criterion="Multiple key clinical dimensions marked unknown or skipped",
+                    matched_evidence="; ".join(unknowns),
+                    action_protocol="Clinician callback to complete missing clinical intake history."
+                )
+            )
+            reasons.append(f"Multiple unknown clinical dimensions: {len(unknowns)} skipped/unknown items")
 
         if p2_triggers:
             return TriageResult(

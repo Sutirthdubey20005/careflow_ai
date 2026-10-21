@@ -7,6 +7,11 @@ from fastapi.testclient import TestClient
 
 # Set environment to mock mode for testing
 os.environ["MEDGEMMA_MODE"] = "mock"
+os.environ["ASR_MODE"] = "mock"
+
+from backend.config import settings
+settings.MEDGEMMA_MODE = "mock"
+settings.ASR_MODE = "mock"
 
 from backend.database.db import Base, get_db
 from backend.main import app

@@ -1,6 +1,6 @@
 from datetime import datetime
 import json
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index, Float, Boolean
 from sqlalchemy.orm import relationship
 from backend.database.db import Base
 
@@ -73,6 +73,13 @@ class Message(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+    # Provenance and Modality Metadata
+    raw_transcript = Column(Text, nullable=True)  # Original unedited ASR transcript if voice
+    source_type = Column(String(32), default="patient_typed", nullable=True)  # 'patient_typed', 'voice_transcript', 'ocr_extraction'
+    source_language = Column(String(16), nullable=True)
+    transcription_confidence = Column(Float, nullable=True)
+    is_confirmed = Column(Boolean, default=True, nullable=True)
+
     case = relationship("Case", back_populates="messages")
     evidence_items = relationship("Evidence", back_populates="source_message")
 
@@ -82,6 +89,11 @@ class Message(Base):
             "case_id": self.case_id,
             "role": self.role,
             "content": self.content,
+            "raw_transcript": self.raw_transcript,
+            "source_type": self.source_type or "patient_typed",
+            "source_language": self.source_language,
+            "transcription_confidence": self.transcription_confidence,
+            "is_confirmed": self.is_confirmed if self.is_confirmed is not None else True,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
@@ -96,6 +108,8 @@ class Evidence(Base):
     status = Column(String(32), default="reported", nullable=False)  # 'reported', 'unknown', 'conflicting', 'uncertain'
     source_message_id = Column(Integer, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
     source_quote = Column(Text, nullable=True)
+    source_type = Column(String(32), default="patient_message", nullable=True)
+    confidence = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     case = relationship("Case", back_populates="evidence_items")
@@ -110,6 +124,8 @@ class Evidence(Base):
             "status": self.status,
             "source_message_id": self.source_message_id,
             "source_quote": self.source_quote,
+            "source_type": self.source_type or "patient_message",
+            "confidence": self.confidence,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

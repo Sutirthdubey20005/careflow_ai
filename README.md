@@ -159,40 +159,60 @@ streamlit run frontend/app.py --server.port 8501
 
 ## 5. Running Automated Tests
 
-CareFlow features an automated `pytest` test suite covering 18 test cases across all critical modules:
+CareFlow features a comprehensive automated `pytest` test suite covering **52 test cases across 10 test modules**:
 
 ```bash
 pytest -v
 ```
 
-### Verified Test Areas
-1. **Database & ORM Integrity:** Table relationships, cascade deletion, foreign key pragmas in SQLite.
-2. **Evidence-State Tracking:** Atomic fact extraction, unknown answer preservation (`status="unknown"`, not converted to negative), and conflict detection retaining both clashing records.
-3. **Deterministic Triage Rules:** Emergency precedence (P0 never downgraded), P1 urgent indicators, P2 conflict/uncertainty escalation, P3 routine classification.
-4. **AI Failure Safety:** Ensuring that AI or schema failure automatically places cases into `ERR: Review required — AI unavailable` rather than assigning a routine priority.
-5. **Adaptive Questioning Limits:** Enforcing the 8-turn question limit and stopping gracefully.
-6. **API Endpoints & Workflows:** Full conversational intake lifecycle, early submissions, queue sorting and filtering, reviewer approvals, and priority overrides with mandatory reasons.
+### Verified Test Suites
+1. **Safety Defect Regressions (`tests/test_safety_fixes.py`):**
+   - Fabricated cardiac denials strictly prevented (chest pain complaints never fabricate prior history denials).
+   - Interim P1 urgency persistence (interim high fever/severe pain cannot be erased by follow-up answers).
+   - Document upload actor attribution (`ai_system`, never `reviewer`).
+2. **Multilingual Processing (`tests/test_multilingual.py`):**
+   - English, Devanagari Hindi, and Hinglish symptom extraction.
+   - Cross-lingual duration, progression, and severity understanding without translation artifacts.
+   - Cross-turn timeline contradiction detection across English and Hindi.
+3. **Voice Audio Transcription (`tests/test_transcription.py`):**
+   - Standalone `/transcribe-audio` endpoint verification.
+   - Format validation, empty file rejection, size limit enforcement (25 MB max).
+   - Secure temporary file cleanup with zero leaked disk files.
+4. **Medical Report OCR (`tests/test_ocr_service.py`):**
+   - Native `winocr` and multilingual `PaddleOCR` integration with metadata tracking.
+   - Document extraction preview endpoint (`/cases/{id}/extract-document`) without premature case ingestion.
+5. **Questioning Policy Benchmark (`tests/test_eval_policies.py`):**
+   - Verification of Fixed, MedGemma-only, State-aware, and CareFlow-BQ policies under budgets 4, 6, 8.
+   - Patient oracle simulation and redundancy detection.
+6. **Core Operational Protocols (`tests/test_api.py`, `tests/test_database.py`, `tests/test_evidence_state.py`, `tests/test_extraction.py`, `tests/test_triage_rules.py`):
+   - Deterministic P0 emergency precedence, P1 urgent triage, P2 conflict handling, P3 routine review.
+   - Safe degradation to `ERR: Review required — AI unavailable` on model failure.
 
 ---
 
-## 6. Running the Clinical AI Benchmark Evaluation
+## 6. Running Research Benchmarks & Policy Evaluation
 
-CareFlow includes an empirical evaluation pipeline measuring extraction accuracy, triage protocol consistency, conflict preservation, and latency across 7 standardized test fixtures:
+CareFlow provides two repeatable evaluation benchmarks:
 
-### Run via Command Line
-
+### Suite A: Standardized Clinical Pipeline Fixtures (7 Tests)
 ```bash
 python -m evaluation.run_eval
 ```
+- Tests 7 standardized scenarios: Acute Coronary P0, Febrile Meningeal P1, Severe Flank Pain P1, Contradictory Duration P2, Unknown Dimension P3, Routine Cold P3, and AI Failure Fallback ERR.
+- Logs traces to `evaluation_results/eval_<timestamp>.jsonl` and summary to `evaluation_results/eval_<timestamp>_summary.json`.
 
-Outputs:
-- Live console summary table with latency and accuracy percentages.
-- Benchmark reports saved to `evaluation_results/eval_<timestamp>.jsonl` and `eval_<timestamp>_summary.json`.
+### Suite B: Multi-Policy Questioning Benchmark (Budgets 4, 6, 8)
+```bash
+python -m evaluation.eval_policies
+```
+- Empirically benchmarks 4 question-selection policies across question budgets (4, 6, 8):
+  1. **Fixed:** Scripted clinical sequence.
+  2. **MedGemma-only:** Zero-shot conversational generation from history.
+  3. **State-aware:** Deterministic missing-slot fulfillment.
+  4. **CareFlow-BQ:** Budgeted questioning prioritizing high-acuity life-threats.
+- Evaluates: Extraction quality, critical question recall %, required info coverage %, redundancy rate %, missed escalation triggers, and turn latency.
 
-### Run via Streamlit UI
-1. Navigate to `http://localhost:8501/evaluation`.
-2. Click **▶️ Run Benchmark Evaluation Suite**.
-3. Inspect live metrics cards, fixture-by-fixture comparison tables, and download JSONL reports.
+Both benchmarks can also be executed and inspected visually via the Streamlit interface at **`http://localhost:8501/evaluation`**.
 
 ---
 
@@ -204,8 +224,11 @@ Outputs:
 | `POST` | `/cases` | Creates a new patient intake with a random non-identifying Case ID |
 | `GET` | `/cases` | Lists cases sorted by priority (`P0` -> `P1` -> `P2` -> `P3` -> `ERR`) and wait time |
 | `GET` | `/cases/{id}` | Fetches full case details, messages, evidence items, and audit logs |
-| `POST` | `/cases/{id}/messages` | Appends patient message, updates evidence state, runs interim red-flag check |
+| `POST` | `/cases/{id}/messages` | Appends patient message, updates evidence state, runs interim red-flag check (supports `source_type`, `transcription_confidence`, `is_confirmed`) |
 | `POST` | `/cases/{id}/next-question` | Generates single next clarifying question via MedGemma (max 8 turns) |
+| `POST` | `/cases/{id}/upload-document` | Uploads and extracts text from medical image/PDF directly into case |
+| `POST` | `/transcribe-audio` | Transcribes audio without auto-submitting; returns transcript, language, confidence, and model size |
+| `POST` | `/cases/{id}/extract-document` | Previews OCR text extraction without committing to case transcript |
 | `POST` | `/cases/{id}/submit` | Finalizes intake, produces clinical summary, applies deterministic triage rules |
 | `POST` | `/cases/{id}/generate-summary` | Regenerates clinical summary draft |
 | `POST` | `/cases/{id}/review` | Saves reviewer edits, clinical notes, and approval status |
@@ -219,6 +242,12 @@ Outputs:
 CareFlow uses SQLite with SQLAlchemy models and foreign key enforcement:
 
 - **`cases`**: `id` (PK, e.g. `CF-2026-XXXX`), `created_at`, `updated_at`, `preferred_language`, `chief_complaint`, `evidence_state_json`, `ai_summary_json`, `ai_status`, `priority_category`, `priority_reasons_json`, `missing_information_json`, `uncertainties_json`, `triage_rule_version`, `review_status`, `reviewer_summary`, `reviewer_priority`, `reviewer_notes`, `reviewed_at`.
-- **`messages`**: `id` (PK), `case_id` (FK), `role` (`patient` / `assistant`), `content`, `created_at`.
-- **`evidence`**: `id` (PK), `case_id` (FK), `field`, `value_json`, `status` (`reported`, `unknown`, `conflicting`, `uncertain`), `source_message_id` (FK), `source_quote`, `created_at`.
-- **`audit_events`**: `id` (PK), `case_id` (FK), `event_type`, `old_value_json`, `new_value_json`, `reason`, `actor_role`, `created_at`.
+- **`messages`**: `id` (PK), `case_id` (FK), `role` (`patient` / `assistant`), `content`, `source_type` (`patient_typed`, `voice`, `ocr`), `source_language`, `transcription_confidence`, `is_confirmed`, `created_at`.
+- **`evidence`**: `id` (PK), `case_id` (FK), `field`, `value_json`, `status` (`reported`, `unknown`, `conflicting`, `uncertain`), `source_message_id` (FK), `source_quote`, `source_type`, `confidence`, `created_at`.
+- **`audit_events`**: `id` (PK), `case_id` (FK), `event_type`, `old_value_json`, `new_value_json`, `reason`, `actor_role` (`patient`, `ai_system`, `triage_engine`, `reviewer`), `created_at`.
+
+---
+
+## 9. Local Windows 11 Run Guide
+
+For complete, copy-paste Windows 11 setup commands (including PowerShell execution policies, D: drive Hugging Face cache redirection, and local audio setup), see [LOCAL_WINDOWS_TEST.md](LOCAL_WINDOWS_TEST.md).

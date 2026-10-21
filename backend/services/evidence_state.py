@@ -57,6 +57,22 @@ class EvidenceStateManager:
             if not any(s.get("signal") == sig_dict.get("signal") for s in urgency_signals):
                 urgency_signals.append(sig_dict)
 
+        # Check for unverified or low-confidence voice/OCR sources
+        if source_message:
+            s_type = getattr(source_message, "source_type", None)
+            s_conf = getattr(source_message, "transcription_confidence", None)
+            s_conf_flag = getattr(source_message, "is_confirmed", True)
+
+            if s_type == "voice_transcript" and s_conf is not None and s_conf < 0.7:
+                unc_msg = f"Low-confidence voice transcript ({round(s_conf*100)}%): clinical facts require verbal clinician confirmation."
+                if unc_msg not in uncertainties:
+                    uncertainties.append(unc_msg)
+
+            if s_conf_flag is False:
+                unc_msg = f"Unverified {s_type or 'input'}: patient confirmation was not completed before ingestion."
+                if unc_msg not in uncertainties:
+                    uncertainties.append(unc_msg)
+
         # Process each evidence item from extraction
         for item in extraction.evidence_items:
             field = item.field
@@ -64,6 +80,8 @@ class EvidenceStateManager:
             status = item.status
             quote = item.source_quote or (source_message.content if source_message else None)
             source_msg_id = source_message.id if source_message else None
+            source_type_val = getattr(source_message, "source_type", item.source_type)
+            conf_val = getattr(source_message, "transcription_confidence", item.confidence)
 
             # Check if this field was already recorded
             if field in current_facts:
@@ -89,6 +107,8 @@ class EvidenceStateManager:
                 status=status,
                 source_message_id=source_msg_id,
                 source_quote=quote,
+                source_type=source_type_val,
+                confidence=conf_val,
                 created_at=datetime.utcnow()
             )
             db.add(evidence_row)
@@ -98,7 +118,8 @@ class EvidenceStateManager:
                 "field": field,
                 "value": new_value,
                 "status": status,
-                "source_type": item.source_type,
+                "source_type": source_type_val,
+                "confidence": conf_val,
                 "source_message_id": source_msg_id,
                 "source_quote": quote,
                 "updated_at": datetime.utcnow().isoformat()

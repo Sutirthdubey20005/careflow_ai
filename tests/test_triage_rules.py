@@ -146,3 +146,103 @@ def test_generalized_model_urgency_signal_p1():
     result = triage_engine.evaluate(evidence_state, messages, ai_status="ready")
     assert result.priority_category == "P1"
     assert any(t.rule_id == "RULE-P1-MODEL-01" for t in result.triggered_rules)
+
+
+def test_p1_acute_central_chest_pain_without_radiation():
+    """Acute chest discomfort without confirmed radiation triggers P1 urgent review, never P3 routine."""
+    test_cases = [
+        "very high chest pain",
+        "dil me bahut dard ho rha",
+        "my lower chest is paining i cant spit",
+        "सीने में तेज दर्द है",
+        "chest tightness and discomfort"
+    ]
+    for text in test_cases:
+        res = triage_engine.evaluate(
+            evidence_state={"facts": {}},
+            raw_messages=[text],
+            ai_status="ready"
+        )
+        assert res.priority_category == "P1", f"Failed for '{text}': got {res.priority_category}"
+        assert any(t.rule_id in ("RULE-P1-CARD-05", "RULE-P1-PAIN-02") for t in res.triggered_rules)
+
+
+def test_p1_standalone_numeric_pain_scores():
+    """Standalone numeric severity replies (10, 9, 8) trigger P1 severe pain, never P3."""
+    for score in ["10", "9", "8"]:
+        res = triage_engine.evaluate(
+            evidence_state={"facts": {}},
+            raw_messages=["I have a headache", score],
+            ai_status="ready"
+        )
+        assert res.priority_category == "P1", f"Failed for standalone score '{score}': got {res.priority_category}"
+        assert any(t.rule_id == "RULE-P1-PAIN-02" for t in res.triggered_rules)
+
+
+def test_p1_severe_pain_hinglish_variants():
+    """Hinglish headache and severe pain statements correctly trigger P1."""
+    hinglish_samples = [
+        "bahut shar dard hai yaar",
+        "sar me bahut tez dard hai",
+        "shar me bahut dard ho raha hai"
+    ]
+    for msg in hinglish_samples:
+        res = triage_engine.evaluate(
+            evidence_state={"facts": {}},
+            raw_messages=[msg],
+            ai_status="ready"
+        )
+        assert res.priority_category == "P1", f"Failed for Hinglish '{msg}': got {res.priority_category}"
+        assert any(t.rule_id == "RULE-P1-PAIN-02" for t in res.triggered_rules)
+
+
+def test_p1_evidence_fact_severity_trigger():
+    """Structured severity >= 8/10 or 'Severe' in evidence_state facts triggers P1."""
+    evidence_state = {
+        "facts": {
+            "severity": {"value": "9/10", "status": "reported"}
+        }
+    }
+    res = triage_engine.evaluate(
+        evidence_state=evidence_state,
+        raw_messages=["I have a toothache"],
+        ai_status="ready"
+    )
+    assert res.priority_category == "P1"
+    assert any(t.rule_id == "RULE-P1-PAIN-02" for t in res.triggered_rules)
+
+
+def test_p2_clinical_uncertainty_trigger():
+    """A clinical uncertainty (e.g. unverified audio or patient ambiguity) triggers P2."""
+    evidence_state = {
+        "facts": {},
+        "uncertainties": ["Low-confidence voice transcript (55%): clinical facts require verbal clinician confirmation."],
+        "contradictions": []
+    }
+    res = triage_engine.evaluate(
+        evidence_state=evidence_state,
+        raw_messages=["I feel unwell"],
+        ai_status="ready"
+    )
+    assert res.priority_category == "P2"
+    assert any(t.rule_id == "RULE-P2-UNCERTAIN-02" for t in res.triggered_rules)
+
+
+def test_p2_multiple_unknown_intake_dimensions():
+    """Multiple skipped or unknown dimensions trigger P2 incomplete intake."""
+    evidence_state = {
+        "facts": {},
+        "unknown_information": [
+            "Patient indicated unknown or skipped: 'onset'",
+            "Patient indicated unknown or skipped: 'severity'"
+        ],
+        "contradictions": []
+    }
+    res = triage_engine.evaluate(
+        evidence_state=evidence_state,
+        raw_messages=["I have a mild rash"],
+        ai_status="ready"
+    )
+    assert res.priority_category == "P2"
+    assert any(t.rule_id == "RULE-P2-INCOMPLETE-03" for t in res.triggered_rules)
+

@@ -319,16 +319,26 @@ with col_detail:
 
             # Uploaded Documents & OCR Inspection
             doc_events = [ev for ev in case_data.get("audit_events", []) if ev.get("event_type") == "document_uploaded"]
-            if doc_events:
-                with st.expander(f"📄 Uploaded Medical Documents & OCR Extractions ({len(doc_events)})", expanded=False):
-                    for dev in doc_events:
-                        details = dev.get("details", {})
-                        fname = details.get("filename", "document")
-                        chars = details.get("char_count", 0)
-                        preview = details.get("preview", "")
-                        st.markdown(f"**Document:** `{fname}` ({chars} characters extracted via native OCR)")
-                        if preview:
-                            st.text_area(f"OCR Extracted Content ({fname}):", value=preview, height=100, disabled=True, key=f"ocr_view_{dev.get('id', fname)}")
+            ocr_msgs = [m for m in case_data.get("messages", []) if m.get("source_type") in ("ocr", "ocr_extraction")]
+
+            if doc_events or ocr_msgs:
+                doc_count = max(len(doc_events), len(ocr_msgs))
+                with st.expander(f"📄 Uploaded Medical Documents & OCR Extractions ({doc_count})", expanded=False):
+                    if doc_events:
+                        for dev in doc_events:
+                            details = dev.get("new_value") or dev.get("details") or {}
+                            fname = details.get("filename", "document")
+                            chars = details.get("char_count", 0)
+                            engine = details.get("ocr_engine", "native OCR")
+                            conf = details.get("confidence")
+                            conf_str = f" | Confidence: ~{int(conf * 100)}%" if conf is not None else ""
+                            preview = details.get("preview", "")
+                            st.markdown(f"**Document:** `{fname}` ({chars} characters via <code>{engine}</code>{conf_str})", unsafe_allow_html=True)
+                            if preview:
+                                st.text_area(f"OCR Extracted Content ({fname}):", value=preview, height=110, disabled=True, key=f"ocr_view_{dev.get('id', fname)}")
+                    else:
+                        for m in ocr_msgs:
+                            st.text_area(f"Document Message OCR:", value=m.get("content", ""), height=110, disabled=True, key=f"msg_ocr_{m.get('id')}")
 
             # Warnings / Missing Info / Uncertainties
             missing = case_data.get("missing_information", [])
@@ -378,15 +388,68 @@ with col_detail:
                     for fact, quote in citations.items():
                         st.markdown(f'<div class="citation-box"><strong>{fact}:</strong> &ldquo;{quote}&rdquo;</div>', unsafe_allow_html=True)
 
+            # Atomic Evidence Items & Source Provenance
+            evidence_items = case_data.get("evidence_items", [])
+            if evidence_items:
+                with st.expander(f"🔬 Atomic Evidence Items & Modality Provenance ({len(evidence_items)})", expanded=False):
+                    st.caption("Extracted clinical facts with explicit source modality, confidence, and verification status:")
+                    for item in evidence_items:
+                        f_name = item.get("field", "").replace("_", " ").title()
+                        f_val = str(item.get("value", ""))
+                        f_status = item.get("status", "reported").upper()
+                        f_source = item.get("source_type", "patient_message")
+                        f_conf = item.get("confidence")
+                        f_quote = item.get("source_quote", "")
+
+                        # Modality Badge
+                        if "voice" in f_source.lower():
+                            mod_badge = f'<span style="background:#EEF2FF; color:#4338CA; border:1px solid #C7D2FE; font-size:11px; padding:2px 6px; border-radius:6px; font-weight:600;">🎤 Voice (Conf: {int(f_conf*100) if f_conf is not None else "N/A"}%)</span>'
+                        elif "ocr" in f_source.lower() or "document" in f_source.lower():
+                            mod_badge = '<span style="background:#ECFDF5; color:#047857; border:1px solid #A7F3D0; font-size:11px; padding:2px 6px; border-radius:6px; font-weight:600;">📄 Medical Report OCR</span>'
+                        else:
+                            mod_badge = '<span style="background:#F1F5F9; color:#475569; border:1px solid #CBD5E1; font-size:11px; padding:2px 6px; border-radius:6px; font-weight:600;">💬 Typed Text</span>'
+
+                        # Status style
+                        stat_color = "#15803D" if f_status == "REPORTED" else ("#DC2626" if f_status in ["CONFLICTING", "UNCERTAIN"] else "#475569")
+                        stat_badge = f'<span style="background:{stat_color}15; color:{stat_color}; font-size:11px; font-weight:700; padding:2px 6px; border-radius:6px; border:1px solid {stat_color}40;">{f_status}</span>'
+
+                        quote_str = f'<div style="font-size:12px; color:#64748B; margin-top:3px;"><em>Grounded Quote:</em> &ldquo;{f_quote}&rdquo;</div>' if f_quote else ""
+
+                        st.markdown(f"""
+                        <div style="border: 1px solid #E2E8F0; border-radius: 6px; padding: 8px 12px; margin-bottom: 6px; background: white;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <strong>{f_name}:</strong> <span style="color:#0F172A; font-weight:500;">{f_val}</span>
+                                <div>{mod_badge} {stat_badge}</div>
+                            </div>
+                            {quote_str}
+                        </div>
+                        """, unsafe_allow_html=True)
+
             st.write("---")
 
             # Complete Conversation History
             with st.expander("💬 Complete Patient Conversation Transcript", expanded=False):
                 msgs = case_data.get("messages", [])
                 for m in msgs:
-                    role_label = "👤 Patient" if m["role"] == "patient" else "🤖 CareFlow Assistant"
-                    st.markdown(f"**{role_label}** `({m.get('created_at', '')[:19]})`:")
+                    if m["role"] == "patient":
+                        m_source = m.get("source_type", "patient_typed")
+                        if m_source in ("voice", "voice_transcript"):
+                            conf_val = m.get("transcription_confidence")
+                            conf_str = f" | Conf: {int(conf_val*100)}%" if conf_val is not None else ""
+                            lang_str = f" | {m.get('source_language')}" if m.get("source_language") else ""
+                            mod_label = f'<span style="background:#EEF2FF; color:#4338CA; border:1px solid #C7D2FE; font-size:11px; font-weight:700; padding:2px 6px; border-radius:6px; margin-left:6px;">🎤 Voice{lang_str}{conf_str}</span>'
+                        elif m_source in ("ocr", "ocr_extraction"):
+                            mod_label = '<span style="background:#ECFDF5; color:#047857; border:1px solid #A7F3D0; font-size:11px; font-weight:700; padding:2px 6px; border-radius:6px; margin-left:6px;">📄 Report OCR</span>'
+                        else:
+                            mod_label = '<span style="background:#F1F5F9; color:#475569; border:1px solid #CBD5E1; font-size:11px; font-weight:700; padding:2px 6px; border-radius:6px; margin-left:6px;">💬 Typed</span>'
+                        role_label = f"👤 Patient {mod_label}"
+                    else:
+                        role_label = "🤖 CareFlow Assistant"
+
+                    st.markdown(f"**{role_label}** `({m.get('created_at', '')[:19]})`:", unsafe_allow_html=True)
                     st.write(f"> {m['content']}")
+                    if m.get("raw_transcript") and m.get("raw_transcript").strip() != m["content"].strip():
+                        st.caption(f"🎤 *Original ASR transcript (before patient edits):* &ldquo;{m['raw_transcript']}&rdquo;")
 
             # Reviewer Controls & Approval Form
             st.subheader("Clinician Actions & Approval")

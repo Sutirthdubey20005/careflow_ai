@@ -181,3 +181,32 @@ def test_api_upload_document_pdf(client):
     data = resp.json()
     assert data["status"] == "success"
     assert data["filename"] == "prescription.pdf"
+
+
+def test_api_create_case_initial_triage_acuity(client):
+    """Acute chief complaint at case creation is triaged immediately as P1 or P0, never default P3."""
+    resp = client.post("/cases", json={
+        "preferred_language": "Hinglish",
+        "chief_complaint": "dil me bahut dard ho rha"
+    })
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["priority_category"] == "P1"
+    assert data["chief_complaint"] == "dil me bahut dard ho rha"
+    assert any("RULE-P1" in r for r in data["priority_reasons"])
+
+
+def test_api_reviewer_queue_reflects_actual_db_priority_counts(client):
+    """Verifies that list_cases accurately returns cases with their prioritized categories."""
+    # Create a routine case
+    c1 = client.post("/cases", json={"chief_complaint": "mild sneezing for 2 days"}).json()["id"]
+    # Create an urgent case
+    c2 = client.post("/cases", json={"chief_complaint": "very high chest pain"}).json()["id"]
+
+    list_resp = client.get("/cases")
+    assert list_resp.status_code == 200
+    cases = list_resp.json()
+    case_map = {c["id"]: c["priority_category"] for c in cases}
+    assert case_map[c1] == "P3"
+    assert case_map[c2] == "P1"
+
