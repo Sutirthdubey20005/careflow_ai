@@ -104,8 +104,14 @@ class TranscriptionService:
             else:
                 options_dict["language"] = lang_param
 
+            class DeepgramPrerecordedOptions(dict):
+                def __getattr__(self, name):
+                    return self.get(name)
+                def __setattr__(self, name, value):
+                    self[name] = value
+
             PrerecordedOptions = getattr(deepgram, "PrerecordedOptions", None)
-            options = PrerecordedOptions(**options_dict) if PrerecordedOptions else options_dict
+            options = PrerecordedOptions(**options_dict) if PrerecordedOptions else DeepgramPrerecordedOptions(options_dict)
             kwargs = {}
             if translate_to_english:
                 kwargs["addons"] = {"translate": "en"}
@@ -217,7 +223,10 @@ class TranscriptionService:
         try:
             import deepgram
             from deepgram import DeepgramClient
-            deepgram_client = DeepgramClient(api_key)
+            try:
+                deepgram_client = DeepgramClient(api_key=api_key)
+            except TypeError:
+                deepgram_client = DeepgramClient(api_key)
 
             # Attempt 1: Requested language mode (or auto-detect if not specified)
             if use_auto_detect:
@@ -280,7 +289,10 @@ class TranscriptionService:
             import deepgram
             from deepgram import DeepgramClient
 
-            deepgram_client = DeepgramClient(api_key)
+            try:
+                deepgram_client = DeepgramClient(api_key=api_key)
+            except TypeError:
+                deepgram_client = DeepgramClient(api_key)
 
             if hasattr(deepgram_client, "speak") and hasattr(deepgram_client.speak, "rest"):
                 SpeakOptions = getattr(deepgram, "SpeakOptions", None)
@@ -297,6 +309,8 @@ class TranscriptionService:
                     return resp.content
                 elif isinstance(resp, bytes):
                     return resp
+                elif hasattr(resp, "__iter__"):
+                    return b"".join(resp)
             raise TranscriptionError("Deepgram speak method not available on client.")
         except Exception as e:
             logger.error(f"Deepgram TTS synthesis failed: {e}")
@@ -373,7 +387,7 @@ class TranscriptionService:
         # (Preserved under feature flag USE_DEEPGRAM=False or Deepgram fallback)
         # -------------------------------------------------------------
         asr_mode = (getattr(settings, "ASR_MODE", None) or os.getenv("ASR_MODE", "auto")).lower()
-        has_whisper_key = bool(settings.WHISPER_API_KEY or os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY") or settings.HF_TOKEN)
+        has_whisper_key = bool(settings.WHISPER_API_KEY or os.getenv("OPENAI_API_KEY") or settings.HF_TOKEN)
 
         # Priority 2A: Hosted Whisper (Groq Cloud / Hugging Face router)
         if asr_mode == "hosted" or (asr_mode == "auto" and has_whisper_key and settings.WHISPER_ENDPOINT):
@@ -523,7 +537,8 @@ class TranscriptionService:
                     logger.warning(f"Failed to remove temp audio file {temp_path}: {clean_err}")
 
     # =========================================================================
-    # PRESERVED CODE: Hosted Whisper API (Groq Cloud / Hugging Face router)
+    # =========================================================================
+    # PRESERVED CODE: Hosted Whisper API (Hugging Face router / OpenAI)
     # =========================================================================
     def _hosted_transcribe(
         self,
@@ -532,8 +547,8 @@ class TranscriptionService:
         language: Optional[str] = None,
         model_size: Optional[str] = None
     ) -> Optional[TranscriptionResult]:
-        """Calls a hosted Whisper endpoint (Groq Cloud whisper-large-v3, Hugging Face, or OpenAI)."""
-        raw_key = (settings.WHISPER_API_KEY or os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY") or settings.HF_TOKEN or "").strip()
+        """Calls a hosted Whisper endpoint (Hugging Face router or OpenAI)."""
+        raw_key = (settings.WHISPER_API_KEY or os.getenv("OPENAI_API_KEY") or settings.HF_TOKEN or "").strip()
         endpoint = (settings.WHISPER_ENDPOINT or "").strip()
 
         # Discover HF token across all possible env vars
@@ -544,23 +559,19 @@ class TranscriptionService:
             or ""
         ).strip()
 
-        groq_key = (
-            (raw_key if raw_key.startswith("gsk_") else None)
-            or os.getenv("GROQ_API_KEY")
-            or ""
-        ).strip()
-
-        # Intelligent API auto-routing:
-        if (raw_key and raw_key.startswith("hf_")) or (hf_token and not groq_key):
+        # API routing: Hugging Face router or OpenAI
+        if raw_key.startswith("hf_") or hf_token:
             api_key = hf_token or raw_key
-            if not endpoint or "groq.com" in endpoint or "api-inference.huggingface.co" in endpoint:
+            if not endpoint or "api-inference.huggingface.co" in endpoint or "groq" in endpoint:
                 endpoint = "https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3"
-        elif groq_key or (raw_key and not raw_key.startswith("hf_")):
-            api_key = groq_key or raw_key
-            if not endpoint or "huggingface.co" in endpoint:
-                endpoint = "https://api.groq.com/openai/v1/audio/transcriptions"
-        else:
+        elif raw_key.startswith("sk-"):
             api_key = raw_key
+            if not endpoint:
+                endpoint = "https://api.openai.com/v1/audio/transcriptions"
+        else:
+            api_key = hf_token or raw_key
+            if not endpoint and api_key:
+                endpoint = "https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3"
 
         if endpoint and "api-inference.huggingface.co" in endpoint:
             endpoint = endpoint.replace("api-inference.huggingface.co", "router.huggingface.co/hf-inference")

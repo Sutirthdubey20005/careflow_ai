@@ -1,970 +1,652 @@
 import streamlit as st
 import sys
 import hashlib
+import json
 from pathlib import Path
 
+# Add project root to sys.path so frontend can import backend / config if needed
 root_dir = Path(__file__).resolve().parent.parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 from frontend.api_client import api_client
 
+# Responsive centered layout for mobile app feel on phones and clean web widget on PCs
 st.set_page_config(
-    page_title="Patient Intake | CareFlow",
+    page_title="Patient Intake | CareFlow Health System",
     page_icon="🩺",
-    layout="centered"
+    layout="centered",
+    initial_sidebar_state="auto"
 )
 
-# Clean Clinical CSS
+# Professional Hospital-Grade CSS
 st.markdown("""
 <style>
-    .patient-header {
+    /* Generous top clearance so headers and language selectors are NEVER cut off */
+    .block-container {
+        max-width: 780px !important;
+        padding-top: 4.5rem !important;
+        padding-bottom: 2rem !important;
+        padding-left: 1.25rem !important;
+        padding-right: 1.25rem !important;
+    }
+    
+    /* Transparent streamlit top header */
+    header[data-testid="stHeader"] {
+        background-color: transparent !important;
+        z-index: 10 !important;
+    }
+
+    /* Hide Streamlit default multipage navigation; custom staff gate in sidebar */
+    [data-testid="stSidebarNav"], 
+    nav[data-testid="stSidebarNav"] {
+        display: none !important;
+    }
+
+    .stApp {
+        background-color: #F8FAFC;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    /* Hospital Branding Header */
+    .hospital-header-card {
         background: linear-gradient(135deg, #0F766E 0%, #0D9488 100%);
         color: white;
         padding: 20px 24px;
-        border-radius: 10px;
-        margin-bottom: 20px;
+        border-radius: 14px;
+        margin-bottom: 16px;
+        box-shadow: 0 4px 12px -2px rgba(15, 118, 110, 0.25);
     }
-    .privacy-notice {
-        background-color: #EFF6FF;
-        border: 1px solid #BFDBFE;
-        border-left: 4px solid #2563EB;
-        padding: 12px 16px;
-        border-radius: 6px;
-        color: #1E40AF;
-        font-size: 13.5px;
-        margin-bottom: 20px;
+    .hospital-brand-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
     }
+    .hospital-title {
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: -0.3px;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .hospital-subtitle {
+        font-size: 13px;
+        opacity: 0.92;
+        margin-top: 4px;
+    }
+    .status-pill {
+        background: rgba(255, 255, 255, 0.2);
+        backdrop-filter: blur(4px);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.3px;
+    }
+
+    /* Emergency Warning Banner */
     .emergency-banner {
-        background-color: #FEE2E2;
-        border: 2px solid #DC2626;
-        padding: 16px;
+        background-color: #FEF2F2;
+        border-left: 4px solid #DC2626;
+        padding: 12px 16px;
         border-radius: 8px;
         color: #991B1B;
-        font-size: 15px;
-        font-weight: 600;
-        margin-bottom: 24px;
+        font-size: 13.5px;
+        margin-bottom: 16px;
+        line-height: 1.5;
+        box-shadow: 0 1px 3px rgba(220, 38, 38, 0.08);
     }
-    .chat-bubble-patient {
-        background-color: #E2E8F0;
-        color: #1E293B;
-        padding: 12px 16px;
-        border-radius: 12px 12px 0 12px;
-        margin-left: 20%;
-        margin-bottom: 12px;
-        font-size: 14.5px;
-    }
-    .chat-bubble-assistant {
-        background-color: #CCFBF1;
-        color: #115E59;
-        border: 1px solid #99F6E4;
-        padding: 14px 18px;
-        border-radius: 12px 12px 12px 0;
-        margin-right: 20%;
-        margin-bottom: 12px;
-        font-size: 15px;
-        font-weight: 500;
-    }
-    .card-review {
+
+    /* Language & Session Bar */
+    .lang-session-card {
         background: white;
         border: 1px solid #E2E8F0;
-        border-radius: 8px;
-        padding: 16px;
+        border-radius: 12px;
+        padding: 12px 18px;
         margin-bottom: 16px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+
+    /* Integrated Multimodal Input Dock */
+    .input-dock {
+        background: #FFFFFF;
+        border: 1px solid #CBD5E1;
+        border-radius: 14px;
+        padding: 16px;
+        margin-top: 14px;
+        margin-bottom: 8px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+    }
+    .dock-mode-card {
+        background: #F8FAFC;
+        border: 1px solid #E2E8F0;
+        border-radius: 10px;
+        padding: 14px;
+        margin-top: 12px;
+        margin-bottom: 8px;
+    }
+    .dock-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: #0F766E;
+        margin-bottom: 4px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .dock-desc {
+        font-size: 12.5px;
+        color: #64748B;
+        line-height: 1.45;
+        margin-bottom: 10px;
+    }
+
+    /* Badges */
+    .voice-badge {
+        background-color: #EEF2FF;
+        color: #4338CA;
+        border: 1px solid #C7D2FE;
+        font-size: 11.5px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 10px;
+        display: inline-block;
+        margin-bottom: 4px;
+    }
+    .ocr-badge {
+        background-color: #ECFDF5;
+        color: #047857;
+        border: 1px solid #A7F3D0;
+        font-size: 11.5px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 10px;
+        display: inline-block;
+        margin-bottom: 4px;
+    }
+
+    /* Confirmation Card */
+    .card-confirm {
+        background: white;
+        border: 1px solid #E2E8F0;
+        border-radius: 14px;
+        padding: 24px;
+        margin-top: 16px;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.04);
     }
 </style>
 """, unsafe_allow_html=True)
 
+# Translation catalogs for dynamic multilingual responses
+GREETINGS = {
+    "English": "Hello! I am CareFlow's clinical intake assistant. Please describe the symptoms or health concerns you are experiencing today (type below or use voice/document upload).",
+    "Hindi": "नमस्ते! मैं केयरफ़्लो का क्लिनिकल इनटेक सहायक हूँ। कृपया आज आप जिन लक्षणों या स्वास्थ्य समस्याओं का सामना कर रहे हैं, उनके बारे में विस्तार से बताएं।",
+    "Hinglish": "Namaste! Main CareFlow ka clinical intake assistant hoon. Kripya aaj aap jin symptoms ya health issues ko face kar rahe hain, unke baare me batayein (type kar sakte hain ya voice/document use kar sakte hain)."
+}
 
-# =====================================================================
-# BILINGUAL CLINICAL QUESTION & CONVERSATION TRANSLATION DICTIONARY
-# Guarantees full-screen seamless language switching (English <-> Hindi)
-# =====================================================================
 CLINICAL_QUESTIONS_TRANSLATION = {
-    "Does the chest pain radiate or spread to your left arm, shoulder, neck, jaw, or back?": "क्या सीने का दर्द आपके बाएं हाथ, कंधे, गर्दन, जबड़े या पीठ की तरफ फैल रहा है?",
-    "Are you experiencing any shortness of breath, cold sweats, nausea, or lightheadedness along with the chest pain?": "क्या सीने में दर्द के साथ सांस फूलना, ठंडा पसीना, उल्टी या चक्कर आ रहे हैं?",
-    "Did the headache peak at maximum intensity suddenly within seconds (like a thunderclap), or did it build gradually?": "क्या यह सिरदर्द अचानक कुछ ही सेकंड में असहनीय तेज हो गया, या धीरे-धीरे बढ़ा?",
-    "Do you have any neck stiffness, pain when bending your head forward, fever, or sensitivity to bright light?": "क्या आपको गर्दन में अकड़न, सिर आगे झुकाने में दर्द, बुखार या तेज रोशनी से परेशानी हो रही है?",
-    "Are you able to speak in full sentences without gasping, and does lying flat make your breathing harder?": "क्या आप बिना सांस फूले पूरे वाक्य बोल पा रहे हैं, और क्या सीधे लेटने पर सांस ज्यादा फूलती है?",
-    "Have you noticed any audible wheezing, cough with phlegm, fever, or swelling of your face or ankles?": "क्या सांस लेते समय सीटी जैसी आवाज (घरघराहट), खांसी में बलगम, बुखार या चेहरे/पैरों में सूजन है?",
-    "Where exactly in your abdomen is the pain located, and are you able to keep water or fluids down without vomiting?": "पेट में दर्द ठीक किस जगह पर है, और क्या आप पानी या तरल चीजें बिना उल्टी किए पचा पा रहे हैं?",
-    "Does the pain radiate through to your back or shoulder, and have you had fever, chills, or yellowing of the eyes?": "क्या यह दर्द पीठ या कंधे की तरफ जाता है, और क्या आपको बुखार, कंपकंपी या आंखों में पीलापन है?",
-    "How many days have you had the fever, and what was the highest temperature measured?": "आपको बुखार कितने दिनों से है, और थर्मामीटर पर सबसे अधिक तापमान कितना मापा गया?",
-    "Do you have any neck stiffness, confusion, extreme shivering, or any new rash on your skin?": "क्या आपको गर्दन में अकड़न, भ्रम या अत्यधिक कंपकंपी है, या त्वचा पर कोई नया दाना/चकत्ता है?",
-    "When did your symptoms first begin, and have they been constant, worsening, or coming and going?": "यह लक्षण सबसे पहले कब शुरू हुए और क्या यह समय के साथ बढ़ रहे हैं, घट रहे हैं या लगातार बने हुए हैं?",
-    "On a scale from 0 to 10 (where 0 is no discomfort and 10 is unbearable), how severe is your symptom right now?": "0 से 10 के पैमाने पर (जहाँ 0 कोई दर्द नहीं और 10 असहनीय दर्द है), अभी आपका दर्द कितना तीव्र है?",
-    "Are you currently taking any prescription medications, or do you have any relevant medical conditions or allergies?": "क्या आप कोई नियमित दवाइयाँ ले रहे हैं, या आपको कोई पुरानी बीमारी या एलर्जी है?",
-    "Could you clarify any other symptoms you are experiencing?": "क्या आप अपने लक्षणों के बारे में कुछ और विस्तार से बता सकते हैं?",
-    "What other symptoms or discomfort are you experiencing?": "आप इसके अलावा और क्या लक्षण या परेशानी महसूस कर रहे हैं?",
-    "What symptoms or health concerns are you experiencing today?": "आज आप किन लक्षणों या स्वास्थ्य संबंधी परेशानियों का सामना कर रहे हैं?"
-}
-
-REVERSE_QUESTIONS_TRANSLATION = {v: k for k, v in CLINICAL_QUESTIONS_TRANSLATION.items()}
-
-COMMON_PATIENT_PHRASES = {
-    "chest pain": "सीने में दर्द",
-    "fever": "बुखार",
-    "headache": "सिरदर्द",
-    "cough": "खांसी",
-    "vomiting": "उल्टी",
-    "shortness of breath": "सांस लेने में तकलीफ",
-    "stomach pain": "पेट में दर्द",
-    "weakness": "कमजोरी",
-    "chills": "कंपकंपी / ठंड"
-}
-REVERSE_PATIENT_PHRASES = {v: k for k, v in COMMON_PATIENT_PHRASES.items()}
-
-def translate_question_text(text: str, target_lang: str) -> str:
-    """Translates clinical question text between English and Hindi dynamically."""
-    if not text:
-        return ""
-    t_clean = text.strip()
-    if target_lang == "Hindi":
-        if t_clean in CLINICAL_QUESTIONS_TRANSLATION:
-            return CLINICAL_QUESTIONS_TRANSLATION[t_clean]
-        for en, hi in CLINICAL_QUESTIONS_TRANSLATION.items():
-            if en in t_clean:
-                return t_clean.replace(en, hi)
-    elif target_lang == "English":
-        if t_clean in REVERSE_QUESTIONS_TRANSLATION:
-            return REVERSE_QUESTIONS_TRANSLATION[t_clean]
-        for hi, en in REVERSE_QUESTIONS_TRANSLATION.items():
-            if hi in t_clean:
-                return t_clean.replace(hi, en)
-    return text
-
-def get_patient_message_translation(text: str, target_lang: str) -> str:
-    """Provides subtitle translation for patient messages when switching language."""
-    if not text or text.startswith("[Attached"):
-        return ""
-    has_devanagari = any('\u0900' <= c <= '\u097F' for c in text)
-    if target_lang == "English" and has_devanagari:
-        # Hindi -> English translation hint
-        matched = [en for hi, en in REVERSE_PATIENT_PHRASES.items() if hi in text]
-        if matched:
-            return f"Translated: Mentions {', '.join(matched)}"
-    elif target_lang == "Hindi" and not has_devanagari:
-        # English -> Hindi translation hint
-        matched = [hi for en, hi in COMMON_PATIENT_PHRASES.items() if en in text.lower()]
-        if matched:
-            return f"अनुवाद: {', '.join(matched)} का उल्लेख"
-    return ""
-
-# Bilingual Dictionary
-UI_TEXT = {
-    "English": {
-        "title": "🩺 CareFlow Clinical Intake",
-        "subtitle": "Private & Confidential Clinical Symptom Intake",
-        "privacy_title": "🛡️ Privacy Protection Notice:",
-        "privacy_body": "Please do <strong>NOT</strong> enter your name, telephone number, home address, social security / Aadhaar number, or any other identifying personal information. You will be assigned a random, non-identifying Case ID.",
-        "emergency_title": "🚨 POTENTIAL MEDICAL EMERGENCY DETECTED:",
-        "emergency_body": "If you are experiencing severe chest pain, trouble breathing, sudden weakness, or another life-threatening emergency, <strong>immediately call 911 / 112 (or local emergency services) or proceed to the nearest Emergency Room.</strong> Do not wait for online clinical review.",
-        "start_title": "Begin New Clinical Intake",
-        "lang_label": "Preferred Language / भाषा चुनें",
-        "complaint_label": "What symptoms or health concerns are you experiencing today?",
-        "complaint_placeholder": "e.g., I have had a severe sore throat and high fever for 2 days, and it hurts when I swallow. / मुझे दो दिन से तेज़ बुखार और गले में दर्द है...",
-        "doc_upload_header": "📄 Attach Medical Document or Prescription (Optional)",
-        "doc_upload_help": "Upload an image (PNG, JPG) or PDF of a prescription, lab test, or clinical report. Text will be automatically extracted and reviewed.",
-        "doc_extracted_alert": "✅ Medical document parsed and attached to your clinical record.",
-        "start_btn": "Start Intake Assessment →",
-        "case_id_label": "Case ID",
-        "question_count": "Question {curr} of {max}",
-        "you_label": "You",
-        "assistant_label": "CareFlow Assistant",
-        "q_label": "CareFlow Follow-Up Question:",
-        "input_label": "Your Response:",
-        "input_placeholder": "Type your answer here in English or Hindi (हिन्दी)...",
-        "send_btn": "Send Response 💬",
-        "skip_btn": "Skip ⏩",
-        "unknown_btn": "I Don't Know ❓",
-        "early_submit_btn": "Finish & Review Now (Submit Early) 📋",
-        "upload_during_chat": "📎 Upload Additional Medical Document / Lab Report (PDF or Image)",
-        "upload_btn": "Extract & Ingest Document 📤",
-        "voice_header": "🎤 Voice Input (Record or Upload Audio)",
-        "voice_help": "Record symptoms in English, Hindi (हिन्दी), or Hinglish. You will review and edit the transcript before sending.",
-        "voice_transcript_title": "🎤 Voice Transcript (Review & Edit before sending):",
-        "voice_confirm_btn": "Confirm & Send Voice Response 💬",
-        "voice_discard_btn": "Discard Recording ❌",
-        "doc_preview_title": "📄 Extracted Document Text (Review & Edit before sending):",
-        "doc_confirm_btn": "Confirm & Ingest Document Text 📋",
-        "doc_discard_btn": "Discard Document ❌",
-        "review_title": "Review Your Intake Information",
-        "review_subtitle": "Please review the information you provided. You may correct or add details before submitting for clinician review.",
-        "submit_btn": "Submit Intake for Healthcare Professional Review ✅",
-        "return_btn": "← Return to Questions",
-        "success_title": "🎉 Your clinical intake has been successfully submitted!",
-        "confirm_card_title": "Intake Confirmation",
-        "confirm_status": "Queued for Registered Healthcare Professional Review",
-        "confirm_body": "Your responses and uploaded medical documentation have been securely transferred to the clinical reviewer dashboard. A registered medical reviewer will inspect your case notes and clinical summary.",
-        "safety_reminder": "<strong>Important Safety Reminder:</strong> CareFlow is an automated clinical assistant prototype. It does not diagnose medical conditions. If your symptoms worsen or you develop severe chest pain, difficulty breathing, or sudden numbness, seek emergency medical care immediately.",
-        "restart_btn": "Start Another Patient Intake"
+    "Does the chest pain radiate or spread to your left arm, shoulder, neck, jaw, or back?": {
+        "Hindi": "क्या सीने का दर्द आपके बाएं हाथ, कंधे, गर्दन, जबड़े या पीठ की तरफ फैल रहा है?",
+        "Hinglish": "Kya chest pain aapke left arm, shoulder, neck, jaw ya back ki taraf radiate kar raha hai?"
     },
-    "हिन्दी (Hindi)": {
-        "title": "🩺 CareFlow क्लिनिकल इनटेक",
-        "subtitle": "सुरक्षित एवं गोपनीय क्लिनिकल लक्षण मूल्यांकन",
-        "privacy_title": "🛡️ गोपनीयता संरक्षण सूचना:",
-        "privacy_body": "कृपया अपना <strong>नाम, फ़ोन नंबर, घर का पता, आधार कार्ड नंबर</strong> या कोई अन्य पहचान योग्य व्यक्तिगत जानकारी दर्ज <strong>न करें</strong>। आपको एक सुरक्षित, गैर-पहचान योग्य केस आईडी प्रदान की जाएगी।",
-        "emergency_title": "🚨 संभावित आपातकालीन स्थिति पहचानी गई:",
-        "emergency_body": "यदि आप सीने में तेज़ दर्द, सांस लेने में अत्यधिक तकलीफ़, अचानक कमजोरी या कोई अन्य गंभीर आपातकालीन स्थिति महसूस कर रहे हैं, तो <strong>तुरंत आपातकालीन सेवा (112 / 108) पर कॉल करें या नज़दीकी अस्पताल के इमरजेंसी वार्ड में जाएं।</strong> ऑनलाइन समीक्षा की प्रतीक्षा न करें।",
-        "start_title": "नया क्लिनिकल इनटेक शुरू करें",
-        "lang_label": "पसंदीदा भाषा (Preferred Language)",
-        "complaint_label": "आज आप किन लक्षणों या स्वास्थ्य संबंधी परेशानियों का सामना कर रहे हैं?",
-        "complaint_placeholder": "उदा: मुझे दो दिन से तेज़ बुखार, गले में ख़राश और दर्द है, और निगलने में बहुत तकलीफ़ हो रही है...",
-        "doc_upload_header": "📄 मेडिकल पर्ची या दस्तावेज़ अपलोड करें (वैकल्पिक)",
-        "doc_upload_help": "डॉक्टर की पर्ची, लैब टेस्ट या रिपोर्ट की फ़ोटो (PNG, JPG) या PDF अपलोड करें। दस्तावेज़ से टेक्स्ट सुरक्षित रूप से निकाला जाएगा।",
-        "doc_extracted_alert": "✅ दस्तावेज़ से टेक्स्ट सफलतापूर्वक प्राप्त कर लिया गया है।",
-        "start_btn": "इनटेक मूल्यांकन शुरू करें →",
-        "case_id_label": "केस आईडी",
-        "question_count": "प्रश्न {curr} / {max}",
-        "you_label": "आप",
-        "assistant_label": "CareFlow सहायक",
-        "q_label": "CareFlow अनुवर्ती प्रश्न:",
-        "input_label": "आपका उत्तर:",
-        "input_placeholder": "यहाँ अपना उत्तर हिंदी या अंग्रेजी में लिखें...",
-        "send_btn": "उत्तर भेजें 💬",
-        "skip_btn": "छोड़ें ⏩",
-        "unknown_btn": "मुझे नहीं पता ❓",
-        "early_submit_btn": "समीक्षा करें एवं अभी जमा करें 📋",
-        "upload_during_chat": "📎 अतिरिक्त मेडिकल दस्तावेज़ या रिपोर्ट अपलोड करें (PDF/Image OCR)",
-        "upload_btn": "दस्तावेज़ से टेक्स्ट निकालें एवं जोड़ें 📤",
-        "voice_header": "🎤 बोलकर बताएं (आवाज़ रिकॉर्ड करें या ऑडियो अपलोड करें)",
-        "voice_help": "हिंदी, अंग्रेजी या हिंग्लिश में बोलें। भेजने से पहले आप टेक्स्ट की समीक्षा और सुधार कर सकेंगे।",
-        "voice_transcript_title": "🎤 वॉइस ट्रांसक्रिप्ट (भेजने से पहले समीक्षा एवं सुधार करें):",
-        "voice_confirm_btn": "पुष्टि करें और उत्तर भेजें 💬",
-        "voice_discard_btn": "रद्द करें ❌",
-        "doc_preview_title": "📄 दस्तावेज़ से प्राप्त टेक्स्ट (समीक्षा एवं सुधार करें):",
-        "doc_confirm_btn": "पुष्टि करें और दस्तावेज़ जोड़ें 📋",
-        "doc_discard_btn": "दस्तावेज़ हटाएं ❌",
-        "review_title": "अपनी इनटेक जानकारी की समीक्षा करें",
-        "review_subtitle": "कृपया अपने दिए गए उत्तरों की समीक्षा करें। डॉक्टर/समीक्षक के पास जमा करने से पहले आप सुधार कर सकते हैं।",
-        "submit_btn": "स्वास्थ्य विशेषज्ञ समीक्षा हेतु इनटेक जमा करें ✅",
-        "return_btn": "← प्रश्नों पर वापस जाएँ",
-        "success_title": "🎉 आपका क्लिनिकल इनटेक सफलतापूर्वक जमा हो गया है!",
-        "confirm_card_title": "इनटेक पावती (Confirmation)",
-        "confirm_status": "पंजीकृत स्वास्थ्य समीक्षक समीक्षा हेतु कतारबद्ध",
-        "confirm_body": "आपके उत्तर और अपलोड किए गए मेडिकल दस्तावेज़ क्लिनिकल समीक्षक डैशबोर्ड पर सुरक्षित रूप से स्थानांतरित कर दिए गए हैं। एक पंजीकृत चिकित्सक आपके केस और सारांश की समीक्षा करेंगे।",
-        "safety_reminder": "<strong>महत्वपूर्ण सुरक्षा चेतावनी:</strong> CareFlow एक स्वचालित क्लिनिकल सहायक प्रोटोटाइप है। यह कोई चिकित्सा निदान (डायग्नोसिस) नहीं करता है। यदि आपके लक्षण बिगड़ते हैं या आपको सीने में तेज़ दर्द अथवा सांस लेने में तकलीफ़ होती है, तो तुरंत आपातकालीन चिकित्सा सहायता लें।",
-        "restart_btn": "नया इनटेक शुरू करें"
+    "Are you experiencing any shortness of breath, cold sweats, nausea, or lightheadedness along with the chest pain?": {
+        "Hindi": "क्या सीने में दर्द के साथ सांस फूलना, ठंडा पसीना, उल्टी या चक्कर आ रहे हैं?",
+        "Hinglish": "Kya chest pain ke sath saans phoolna, cold sweats, ulti ya chakkar aa rahe hain?"
     },
-    "Auto-detect / Hinglish": {
-        "title": "🩺 CareFlow Clinical Intake",
-        "subtitle": "Private & Confidential Multilingual Clinical Intake (English / Hindi / Hinglish)",
-        "privacy_title": "🛡️ Privacy Protection Notice:",
-        "privacy_body": "Please do <strong>NOT</strong> enter your name, phone number, address, or Aadhaar number. A confidential Case ID will be assigned to your session.",
-        "emergency_title": "🚨 POTENTIAL MEDICAL EMERGENCY DETECTED:",
-        "emergency_body": "If you have severe chest pain, breathing difficulty, sudden weakness, or emergency symptoms, <strong>call 112 / 911 or go to the nearest emergency room immediately.</strong> Do not wait for online clinical review.",
-        "start_title": "Begin New Clinical Intake (नया इनटेक शुरू करें)",
-        "lang_label": "Preferred Language / भाषा चुनें",
-        "complaint_label": "What symptoms or health concerns are you experiencing today? / आज क्या तकलीफ है?",
-        "complaint_placeholder": "Type or speak in English, Hindi (हिन्दी), or Hinglish (e.g. 2 din se severe chest pain aur bukhar hai...)",
-        "doc_upload_header": "📄 Attach Medical Document or Prescription (Optional)",
-        "doc_upload_help": "Upload an image (PNG, JPG) or PDF of a prescription, lab test, or clinical report. Key clinical facts will be scanned automatically.",
-        "doc_extracted_alert": "✅ Medical document parsed and attached to your clinical record.",
-        "start_btn": "Start Intake Assessment →",
-        "case_id_label": "Case ID",
-        "question_count": "Question {curr} of {max}",
-        "you_label": "You",
-        "assistant_label": "CareFlow Assistant",
-        "q_label": "CareFlow Follow-Up Question:",
-        "input_label": "Your Response / आपका उत्तर:",
-        "input_placeholder": "Type in English, Hindi, or Hinglish...",
-        "send_btn": "Send Response 💬",
-        "skip_btn": "Skip ⏩",
-        "unknown_btn": "I Don't Know ❓",
-        "early_submit_btn": "Finish & Review Now (Submit Early) 📋",
-        "upload_during_chat": "📎 Attach Medical Document / Lab Report (PDF or Image)",
-        "upload_btn": "Attach Document 📤",
-        "voice_header": "🎤 Voice Input (Record or Upload Audio)",
-        "voice_help": "Record symptoms in English, Hindi (हिन्दी), or Hinglish. You will review and edit the transcript before sending.",
-        "voice_transcript_title": "🎤 Voice Transcript (Review & Edit before sending):",
-        "voice_confirm_btn": "Confirm & Send Voice Response 💬",
-        "voice_discard_btn": "Discard Recording ❌",
-        "doc_preview_title": "📄 Attached Medical Document:",
-        "doc_confirm_btn": "Confirm & Ingest Document 📋",
-        "doc_discard_btn": "Remove Document ❌",
-        "review_title": "Review Your Intake Information",
-        "review_subtitle": "Please review the information you provided. You may correct or add details before submitting for clinician review.",
-        "submit_btn": "Submit Intake for Healthcare Professional Review ✅",
-        "return_btn": "← Return to Questions",
-        "success_title": "🎉 Your clinical intake has been successfully submitted!",
-        "confirm_card_title": "Intake Confirmation",
-        "confirm_status": "Queued for Registered Healthcare Professional Review",
-        "confirm_body": "Your responses and uploaded medical documentation have been securely transferred to the clinical reviewer dashboard. A registered medical reviewer will inspect your case notes and clinical summary.",
-        "safety_reminder": "<strong>Important Safety Reminder:</strong> CareFlow is an automated clinical assistant prototype. It does not diagnose medical conditions. If your symptoms worsen, seek emergency medical care immediately.",
-        "restart_btn": "Start Another Patient Intake"
+    "Did the headache peak at maximum intensity suddenly within seconds (like a thunderclap), or did it build gradually?": {
+        "Hindi": "क्या यह सिरदर्द अचानक कुछ ही सेकंड में असहनीय तेज हो गया, या धीरे-धीरे बढ़ा?",
+        "Hinglish": "Kya ye sir dard achanak seconds me bahut tez ho gaya (thunderclap ki tarah), ya gradually badha?"
+    },
+    "Do you have any neck stiffness, pain when bending your head forward, fever, or sensitivity to bright light?": {
+        "Hindi": "क्या आपको गर्दन में अकड़न, सिर आगे झुकाने में दर्द, बुखार या तेज रोशनी से परेशानी हो रही है?",
+        "Hinglish": "Kya gardan me stiffness, aage jhukane me dard, bukhar ya bright light se pareshani ho rahi hai?"
+    },
+    "Are you able to speak in full sentences without gasping, and does lying flat make your breathing harder?": {
+        "Hindi": "क्या आप बिना सांस फूले पूरे वाक्य बोल पा रहे हैं, और क्या सीधे लेटने पर सांस ज्यादा फूलती है?",
+        "Hinglish": "Kya aap bina ruke full sentences bol pa rahe hain, aur letne par saans zyada phoolti hai?"
+    },
+    "Have you noticed any audible wheezing, cough with phlegm, fever, or swelling of your face or ankles?": {
+        "Hindi": "क्या सांस लेते समय सीटी जैसी आवाज (घरघराहट), खांसी में बलगम, बुखार या चेहरे/पैरों में सूजन है?",
+        "Hinglish": "Kya saans lete waqt wheezing sound, khansi me balgam, bukhar ya face/pairon me sujan hai?"
+    },
+    "Where exactly in your abdomen is the pain located, and are you able to keep water or fluids down without vomiting?": {
+        "Hindi": "पेट में दर्द ठीक किस जगह पर है, और क्या आप पानी या तरल चीजें बिना उल्टी किए पचा पा रहे हैं?",
+        "Hinglish": "Pet me dard exactly kahan par hai, aur kya aap water ya liquids bina ulti ke digest kar pa rahe hain?"
+    },
+    "Does the pain radiate through to your back or shoulder, and have you had fever, chills, or yellowing of the eyes?": {
+        "Hindi": "क्या यह दर्द पीठ या कंधे की तरफ जाता है, और क्या आपको बुखार, कंपकंपी या आंखों में पीलापन है?",
+        "Hinglish": "Kya dard back ya shoulder me radiate kar raha hai, aur kya bukhar ya eyes me yellowness hai?"
+    },
+    "How many days have you had the fever, and what was the highest temperature measured?": {
+        "Hindi": "आपको बुखार कितने दिनों से है, और थर्मामीटर पर सबसे अधिक तापमान कितना मापा गया?",
+        "Hinglish": "Aapko bukhar kitne dino se hai, aur thermometer par highest temperature kitna measure hua?"
+    },
+    "Do you have any neck stiffness, confusion, extreme shivering, or any new rash on your skin?": {
+        "Hindi": "क्या आपको गर्दन में अकड़न, भ्रम या अत्यधिक कंपकंपी है, या त्वचा पर कोई नया दाना/चकत्ता है?",
+        "Hinglish": "Kya gardan me stiffness, confusion, extreme shivering, ya skin par koi naya rash hai?"
+    },
+    "When did your symptoms first begin, and have they been constant, worsening, or coming and going?": {
+        "Hindi": "यह लक्षण सबसे पहले कब शुरू हुए और क्या यह समय के साथ बढ़ रहे हैं, घट रहे हैं या लगातार बने हुए हैं?",
+        "Hinglish": "Ye symptoms sabse pehle kab shuru hue, aur kya ye continuously badh rahe hain ya kam-zyada ho rahe hain?"
+    },
+    "On a scale from 0 to 10 (where 0 is no discomfort and 10 is unbearable), how severe is your symptom right now?": {
+        "Hindi": "0 से 10 के पैमाने पर (जहाँ 0 कोई दर्द नहीं और 10 असहनीय दर्द है), अभी आपका दर्द कितना तीव्र है?",
+        "Hinglish": "0 se 10 ke scale par (jahan 0 koi dard nahi aur 10 unbearable pain hai), abhi dard kitna severe hai?"
+    },
+    "Are you currently taking any prescription medications, or do you have any relevant medical conditions or allergies?": {
+        "Hindi": "क्या आप कोई नियमित दवाइयाँ ले रहे हैं, या आपको कोई पुरानी बीमारी या एलर्जी है?",
+        "Hinglish": "Kya aap koi regular medications le rahe hain, ya aapko koi existing medical conditions ya allergies hain?"
     }
 }
 
+def get_localized_question(msg_obj: dict, target_lang: str) -> str:
+    """Translates or fetches localized question text based on active trilingual choice."""
+    if not msg_obj:
+        return ""
+    if target_lang == "Hindi" and msg_obj.get("content_hi"):
+        return msg_obj["content_hi"]
+    if target_lang == "Hinglish" and msg_obj.get("content_hinglish"):
+        return msg_obj["content_hinglish"]
+    if target_lang == "English" and msg_obj.get("content_en"):
+        return msg_obj["content_en"]
+
+    base_text = msg_obj.get("content_en") or msg_obj.get("content", "")
+    base_clean = base_text.strip()
+    if base_clean in CLINICAL_QUESTIONS_TRANSLATION:
+        trans_dict = CLINICAL_QUESTIONS_TRANSLATION[base_clean]
+        if target_lang in trans_dict:
+            return trans_dict[target_lang]
+
+    # Dynamic fallback via backend Google translation
+    try:
+        from backend.services.translation import translation_service
+        if target_lang == "Hindi":
+            return translation_service.translate_to_hindi(base_clean, default_hindi=base_clean)
+        elif target_lang == "Hinglish":
+            return translation_service.translate_to_hinglish(base_clean, default_hinglish=base_clean)
+        elif target_lang == "English":
+            return translation_service.translate_to_english(base_clean)
+    except Exception:
+        pass
+
+    return base_text
+
 # Initialize Session State
-if "selected_lang" not in st.session_state:
-    st.session_state.selected_lang = "🌐 Auto-Detect Language (स्वचालित भाषा पहचान)"
-if "case_id" not in st.session_state:
-    st.session_state.case_id = None
-if "intake_step" not in st.session_state:
-    st.session_state.intake_step = "start"  # 'start', 'chatting', 'review_edit', 'submitted'
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "current_question" not in st.session_state:
-    st.session_state.current_question = None
-if "is_emergency" not in st.session_state:
-    st.session_state.is_emergency = False
+if "case_id" not in st.session_state:
+    st.session_state.case_id = None
 if "turn_count" not in st.session_state:
     st.session_state.turn_count = 0
 if "max_turns" not in st.session_state:
     st.session_state.max_turns = 8
+if "is_emergency" not in st.session_state:
+    st.session_state.is_emergency = False
+if "intake_mode" not in st.session_state:
+    st.session_state.intake_mode = "chat"  # 'chat', 'review', 'submitted'
 if "uploaded_docs" not in st.session_state:
     st.session_state.uploaded_docs = []
-if "pending_voice" not in st.session_state:
-    st.session_state.pending_voice = None
-if "pending_voice_start" not in st.session_state:
-    st.session_state.pending_voice_start = None
-if "pending_doc_preview" not in st.session_state:
-    st.session_state.pending_doc_preview = None
+if "processed_audio_hashes" not in st.session_state:
+    st.session_state.processed_audio_hashes = set()
+if "dock_input_mode" not in st.session_state:
+    st.session_state.dock_input_mode = "type"
 
-# Language selector bar in sidebar / top
-lang_options = ["🌐 Auto-Detect Language (स्वचालित भाषा पहचान)", "🇬🇧 English", "🇮🇳 हिन्दी (Hindi)"]
+def reset_intake_session():
+    """Cleans up current patient intake session."""
+    st.session_state.messages = []
+    st.session_state.case_id = None
+    st.session_state.turn_count = 0
+    st.session_state.is_emergency = False
+    st.session_state.intake_mode = "chat"
+    st.session_state.uploaded_docs = []
+    st.session_state.processed_audio_hashes = set()
+    st.session_state.dock_input_mode = "type"
+
+# Sidebar: Hospital Info, Case Management, and Staff Access Code Gate
 with st.sidebar:
-    st.markdown("### 🌐 Language / भाषा")
-    curr_idx = 0
-    if st.session_state.selected_lang in lang_options:
-        curr_idx = lang_options.index(st.session_state.selected_lang)
-    chosen_lang = st.radio(
-        "Interface & Speech Mode:",
-        options=lang_options,
-        index=curr_idx,
-        key="lang_radio"
-    )
-    if chosen_lang != st.session_state.selected_lang:
-        st.session_state.selected_lang = chosen_lang
-        # Dynamic full-screen translation: translate current question & conversation history
-        new_target = "Hindi" if "हिन्दी" in chosen_lang else "English"
-        if st.session_state.current_question:
-            st.session_state.current_question = translate_question_text(st.session_state.current_question, new_target)
-        for m in st.session_state.messages:
-            if m.get("role") == "assistant":
-                m["content"] = translate_question_text(m.get("content", ""), new_target)
-        st.rerun()
+    st.markdown("### 🏥 CareFlow Health System")
+    st.caption("Patient Clinical Intake & Triage Portal")
 
-# Determine active UI dictionary and target language
-if "हिन्दी" in st.session_state.selected_lang:
-    current_target_lang = "Hindi"
-    t = UI_TEXT["हिन्दी (Hindi)"]
-    backend_lang = "Hindi"
-    asr_lang = "hi"
-elif "English" in st.session_state.selected_lang:
-    current_target_lang = "English"
-    t = UI_TEXT["English"]
-    backend_lang = "English"
-    asr_lang = "en"
-else:
-    current_target_lang = "English"
-    t = UI_TEXT["Auto-detect / Hinglish"]
-    backend_lang = "English"
-    asr_lang = "auto"  # Triggers Deepgram detect_language=True
+    if st.session_state.case_id:
+        st.divider()
+        st.markdown(f"**Active Case:** `{st.session_state.case_id}`")
+        if st.button("New Intake Session 🔄", use_container_width=True, key="sidebar_new_intake"):
+            reset_intake_session()
+            st.rerun()
 
-# Header
-st.markdown(f"""
-<div class="patient-header">
-    <h2 style="margin:0; font-size: 24px;">{t['title']}</h2>
-    <div style="font-size: 14px; opacity: 0.9; margin-top: 4px;">{t['subtitle']}</div>
-</div>
-""", unsafe_allow_html=True)
+    st.divider()
+    st.markdown("### 📋 Clinician Reviewer Portal")
+    if st.button("Open Reviewer Dashboard 📋", type="primary", use_container_width=True, key="btn_patient_to_reviewer"):
+        st.switch_page("pages/reviewer.py")
 
-# Privacy Warning
-st.markdown(f"""
-<div class="privacy-notice">
-    <strong>{t['privacy_title']}</strong><br/>
-    {t['privacy_body']}
-</div>
-""", unsafe_allow_html=True)
+    st.divider()
+    st.page_link("pages/model_showcase.py", label="🧠 Model Architecture", icon="🧠")
 
-# Emergency Warning Banner (Conditional)
-if st.session_state.is_emergency:
+# Wrap entire intake portal inside clean centered container
+with st.container():
+    # 1. Hospital Header Bar
+    case_badge_text = f"Case: {st.session_state.case_id}" if st.session_state.case_id else "Confidential Session"
     st.markdown(f"""
-    <div class="emergency-banner">
-        <strong>{t['emergency_title']}</strong><br/>
-        {t['emergency_body']}
+    <div class="hospital-header-card">
+        <div class="hospital-brand-row">
+            <div>
+                <div class="hospital-title">🏥 CareFlow Health System</div>
+                <div class="hospital-subtitle">Clinical Triage & Patient Symptom Intake Portal</div>
+            </div>
+            <div class="status-pill">
+                🔒 {case_badge_text}
+            </div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
-# =====================================================================
-# STEP 1: START INTAKE (Typed, Browser Mic, Audio Upload, & Document OCR)
-# =====================================================================
-if st.session_state.intake_step == "start":
-    st.subheader(t["start_title"])
-
-    # CASE A: PENDING INITIAL VOICE TRANSCRIPT REVIEW
-    if st.session_state.pending_voice_start is not None:
-        pv = st.session_state.pending_voice_start
-        p_trans = pv.get("transcript", "")
-        p_lang = pv.get("language", backend_lang)
-        p_conf = pv.get("confidence")
-        conf_pct = int(p_conf * 100) if p_conf is not None else 0
-        conf_status = "Good acoustic signal" if (p_conf or 0) >= 0.70 else "⚠️ Lower acoustic confidence — please verify accuracy"
-
-        st.markdown(f"""
-        <div style="background-color: #F5F3FF; border: 2px solid #C4B5FD; border-radius: 8px; padding: 14px; margin-bottom: 12px;">
-            <h4 style="margin: 0 0 6px 0; color: #5B21B6; font-size: 15px;">{t['voice_transcript_title']}</h4>
-            <div style="font-size: 13px; color: #6D28D9;">
-                Language: <strong>{p_lang.title() if p_lang else 'Auto-detect'}</strong> | Estimated Confidence: <strong>~{conf_pct}% ({conf_status})</strong>
-            </div>
-            <div style="font-size: 11.5px; color: #7C3AED; margin-top: 4px;">
-                ℹ️ <em>Confidence is an automated acoustic estimate, not a guarantee of medical accuracy. Please review and edit your words below.</em>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if st.session_state.get("last_start_voice_hash") != pv.get("audio_hash"):
-            st.session_state["voice_transcript_start_edit"] = p_trans
-            st.session_state["last_start_voice_hash"] = pv.get("audio_hash")
-
-        edited_start_voice = st.text_area(
-            "Review or edit your transcribed complaint before starting intake:",
-            value=st.session_state.get("voice_transcript_start_edit", p_trans),
-            key="voice_transcript_start_edit",
-            height=110
-        )
-        col_sv1, col_sv2 = st.columns([2, 1])
-        with col_sv1:
-            if st.button("Confirm & Start Intake Assessment →", type="primary", key="btn_confirm_start_voice", use_container_width=True):
-                if edited_start_voice.strip():
-                    with st.spinner("Initializing private intake session & analyzing voice input..."):
-                        try:
-                            # 1. Create case in backend
-                            new_case = api_client.create_case(
-                                preferred_language=backend_lang,
-                                chief_complaint=edited_start_voice.strip()
-                            )
-                            case_id = new_case["id"]
-                            st.session_state.case_id = case_id
-
-                            # 2. Add first message as verified voice input
-                            msg_res = api_client.send_message(
-                                case_id=case_id,
-                                content=edited_start_voice.strip(),
-                                raw_transcript=p_trans,
-                                source_type="voice",
-                                source_language=p_lang,
-                                transcription_confidence=p_conf,
-                                is_confirmed=True
-                            )
-                            st.session_state.messages.append({
-                                "role": "patient",
-                                "content": edited_start_voice.strip(),
-                                "raw_transcript": p_trans,
-                                "source_type": "voice",
-                                "source_language": p_lang,
-                                "transcription_confidence": p_conf
-                            })
-                            if msg_res.get("is_emergency"):
-                                st.session_state.is_emergency = True
-
-                            # 3. Clean up start voice state
-                            st.session_state.pending_voice_start = None
-                            st.session_state.pop("voice_transcript_start_edit", None)
-                            st.session_state.pop("last_start_voice_hash", None)
-
-                            # 4. Request first follow-up question
-                            q_res = api_client.get_next_question(case_id)
-                            st.session_state.turn_count = 1
-
-                            if q_res.get("next_question"):
-                                st.session_state.current_question = q_res["next_question"]
-                                st.session_state.messages.append({"role": "assistant", "content": q_res["next_question"]})
-                                st.session_state.intake_step = "chatting"
-                            else:
-                                st.session_state.intake_step = "review_edit"
-
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error starting intake session: {e}")
-                else:
-                    st.warning("Please enter or edit your symptoms before continuing.")
-        with col_sv2:
-            if st.button(t["voice_discard_btn"], key="btn_discard_start_voice", use_container_width=True):
-                st.session_state.pending_voice_start = None
-                st.session_state.pop("voice_transcript_start_edit", None)
-                st.session_state.pop("last_start_voice_hash", None)
+    # 2. Language Selection & Session Reset Bar (Fully visible with comfortable margin)
+    with st.container():
+        col_lang, col_reset = st.columns([3, 1])
+        with col_lang:
+            active_lang = st.segmented_control(
+                "🌐 Preferred Language / भाषा चुनें",
+                ["English", "Hindi", "Hinglish"],
+                default="Hinglish",
+                key="segmented_lang_control",
+                label_visibility="visible"
+            ) or "Hinglish"
+        with col_reset:
+            st.write("") # spacing alignment
+            st.write("")
+            if st.button("New Intake 🔄", key="btn_top_reset", use_container_width=True, help="Start a new confidential intake session"):
+                reset_intake_session()
                 st.rerun()
 
-    # STANDARD INITIAL INTAKE INPUTS (Typed / Voice Recording / Document OCR)
-    else:
-        st.markdown("#### ✍️ Option 1: Type Your Symptoms")
-        chief_complaint = st.text_area(
-            t["complaint_label"],
-            placeholder=t["complaint_placeholder"],
-            height=100,
-            key="chief_complaint_typed"
-        )
+    # Map to ASR code for transcription
+    asr_lang = "hi" if active_lang == "Hindi" else ("en" if active_lang == "English" else "auto")
 
-        st.markdown("#### 🎙️ Option 2: Record or Upload Audio (English / हिन्दी / Hinglish)")
-        st.caption("Speak naturally in English, Hindi, or Hinglish. You will review and edit your transcript before starting intake.")
-        col_audio1, col_audio2 = st.columns(2)
-        rec_audio_start = None
-        with col_audio1:
-            if hasattr(st, "audio_input"):
-                rec_audio_start = st.audio_input("Record via Microphone", key="mic_start")
-        with col_audio2:
-            upl_audio_start = st.file_uploader(
-                "Upload Voice Audio (WAV, MP3, M4A, OGG, WEBM)",
-                type=["wav", "mp3", "m4a", "ogg", "webm", "flac"],
-                key="audio_start"
-            )
+    # 3. Emergency Disclaimer Notice
+    st.markdown("""
+    <div class="emergency-banner">
+        <strong>🚨 Emergency Notice:</strong> If you are experiencing severe chest pain, extreme shortness of breath, sudden weakness, or uncontrolled bleeding, 
+        <strong>immediately call 112 / 911</strong> or proceed to the nearest hospital emergency department.
+    </div>
+    """, unsafe_allow_html=True)
 
-        chosen_start_audio = rec_audio_start or upl_audio_start
-        if chosen_start_audio is not None:
-            audio_bytes = chosen_start_audio.getvalue()
-            curr_hash = hashlib.sha256(audio_bytes).hexdigest()
-            if st.session_state.pending_voice_start and st.session_state.get("last_start_voice_hash") != curr_hash:
-                st.session_state.pending_voice_start = None
-                st.session_state.pop("voice_transcript_start_edit", None)
+    # -----------------------------------------------------------------
+    # MODE 1: CHAT CONVERSATION INTERFACE
+    # -----------------------------------------------------------------
+    if st.session_state.intake_mode == "chat":
+        # Render Chat History
+        # If no messages yet, show assistant greeting
+        if not st.session_state.messages:
+            with st.chat_message("assistant", avatar="🩺"):
+                st.write(GREETINGS.get(active_lang, GREETINGS["Hinglish"]))
 
-            if st.button("Transcribe Initial Voice 🎙️", type="secondary", key="btn_transcribe_start", use_container_width=True):
-                with st.spinner("Transcribing voice audio..."):
-                    try:
-                        fname = getattr(chosen_start_audio, "name", "recording.wav") or "recording.wav"
-                        t_res = api_client.transcribe_audio(
-                            file_bytes=audio_bytes,
-                            filename=fname,
-                            language=asr_lang
-                        )
-                        t_res["audio_hash"] = curr_hash
-                        st.session_state.pending_voice_start = t_res
-                        st.session_state["voice_transcript_start_edit"] = t_res.get("transcript", "")
-                        st.session_state["last_start_voice_hash"] = curr_hash
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"⚠️ {e}")
+        # Render all conversational messages in history
+        for msg in st.session_state.messages:
+            if msg.get("role") in ("patient", "user"):
+                with st.chat_message("user", avatar="👤"):
+                    src = msg.get("source_type", "patient_typed")
+                    if src == "voice":
+                        st.markdown('<span class="voice-badge">🎤 Voice Recording</span>', unsafe_allow_html=True)
+                    elif src == "ocr":
+                        st.markdown('<span class="ocr-badge">📄 Medical Document</span>', unsafe_allow_html=True)
+                    st.write(msg.get("content", ""))
+            elif msg.get("role") == "assistant":
+                with st.chat_message("assistant", avatar="🩺"):
+                    q_text = get_localized_question(msg, active_lang)
+                    st.write(q_text)
 
-        # Document upload accordion before/with chief complaint
-        with st.expander(t["doc_upload_header"], expanded=False):
-            st.caption(t["doc_upload_help"])
-            doc_file_start = st.file_uploader(
-                "Upload Prescription or Medical Document (PDF, PNG, JPG, JPEG)",
-                type=["pdf", "png", "jpg", "jpeg"],
-                key="doc_start"
-            )
-            if doc_file_start is not None:
-                st.info(f"📁 Selected: **{doc_file_start.name}** ({doc_file_start.size} bytes). This will be scanned and attached to your intake.")
-
-        st.write("---")
-        if st.button(t["start_btn"], type="primary", use_container_width=True):
-            if not chief_complaint.strip() and not doc_file_start:
-                st.warning("Please type your symptoms, record voice audio, or attach a medical document.")
-            else:
-                with st.spinner("Initializing private intake session & analyzing medical input..."):
-                    try:
-                        # 1. Create case in backend
-                        initial_complaint = chief_complaint.strip() if chief_complaint.strip() else "Medical document attached for intake assessment"
-                        new_case = api_client.create_case(
-                            preferred_language=backend_lang,
-                            chief_complaint=initial_complaint
-                        )
-                        case_id = new_case["id"]
-                        st.session_state.case_id = case_id
-
-                        # 2. If a document was uploaded, process OCR via upload endpoint
-                        if doc_file_start is not None:
-                            file_bytes = doc_file_start.getvalue()
-                            up_res = api_client.upload_document(case_id, file_bytes, doc_file_start.name)
-                            st.session_state.uploaded_docs.append({
-                                "name": doc_file_start.name,
-                                "char_count": up_res.get("char_count", 0),
-                                "ocr_preview": up_res.get("extracted_text_snippet", "")
-                            })
-                            if up_res.get("is_emergency"):
-                                st.session_state.is_emergency = True
-
-                        # 3. Add first message to backend if chief complaint was typed
-                        if chief_complaint.strip():
-                            msg_res = api_client.send_message(
-                                case_id=case_id,
-                                content=chief_complaint.strip(),
-                                source_type="patient_typed",
-                                source_language=backend_lang,
-                                is_confirmed=True
-                            )
-                            st.session_state.messages.append({
-                                "role": "patient",
-                                "content": chief_complaint.strip(),
-                                "source_type": "patient_typed",
-                                "source_language": backend_lang
-                            })
-                            if msg_res.get("is_emergency"):
-                                st.session_state.is_emergency = True
-                        elif doc_file_start is not None:
-                            st.session_state.messages.append({
-                                "role": "patient",
-                                "content": f"[Attached Medical Document: {doc_file_start.name}]",
-                                "source_type": "ocr"
-                            })
-
-                        # 4. Request first follow-up question
-                        q_res = api_client.get_next_question(case_id)
-                        st.session_state.turn_count = 1
-
-                        if q_res.get("next_question"):
-                            st.session_state.current_question = q_res["next_question"]
-                            st.session_state.messages.append({"role": "assistant", "content": q_res["next_question"]})
-                            st.session_state.intake_step = "chatting"
-                        else:
-                            st.session_state.intake_step = "review_edit"
-
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error connecting to CareFlow backend: {e}")
-
-# =====================================================================
-# STEP 2: CONVERSATIONAL ADAPTIVE QUESTIONING & IN-CHAT OCR UPLOAD
-# =====================================================================
-elif st.session_state.intake_step == "chatting":
-    q_str = t["question_count"].format(curr=st.session_state.turn_count, max=st.session_state.max_turns)
-    st.caption(f"{t['case_id_label']}: **{st.session_state.case_id}** | {q_str}")
-    
-    # Progress bar
-    progress_val = min(st.session_state.turn_count / st.session_state.max_turns, 1.0)
-    st.progress(progress_val)
-
-    # Conversation history
-    st.write("---")
-    for msg in st.session_state.messages[:-1]:  # Show history except latest assistant prompt
-        if msg["role"] == "patient":
-            src = msg.get("source_type", "patient_typed")
-            badge = ""
-            if src == "voice":
-                badge = '<span style="background:#EEF2FF; color:#4338CA; border:1px solid #C7D2FE; font-size:11px; font-weight:700; padding:2px 6px; border-radius:10px; margin-right:6px;">🎤 Voice Transcript</span>'
-            elif src == "ocr":
-                badge = '<span style="background:#ECFDF5; color:#047857; border:1px solid #A7F3D0; font-size:11px; font-weight:700; padding:2px 6px; border-radius:10px; margin-right:6px;">📄 Document OCR</span>'
-            p_text = msg["content"]
-            sub_tr = get_patient_message_translation(p_text, current_target_lang)
-            sub_html = f'<div style="font-size:12px; opacity:0.8; margin-top:4px; font-style:italic;">{sub_tr}</div>' if sub_tr else ""
-            st.markdown(f'<div class="chat-bubble-patient">{badge}<strong>{t["you_label"]}:</strong> {p_text}{sub_html}</div>', unsafe_allow_html=True)
-        else:
-            disp_asst = translate_question_text(msg["content"], current_target_lang)
-            st.markdown(f'<div class="chat-bubble-assistant"><strong>{t["assistant_label"]}:</strong> {disp_asst}</div>', unsafe_allow_html=True)
-
-    # Current Question Card (Dynamically translated to selected language)
-    current_q_raw = st.session_state.current_question or ("Could you clarify any other symptoms you are experiencing?" if current_target_lang == "English" else "क्या आप अपने लक्षणों के बारे में कुछ और विस्तार से बता सकते हैं?")
-    current_q = translate_question_text(current_q_raw, current_target_lang)
-    st.markdown(f'<div class="chat-bubble-assistant" style="margin-right: 0; background: #E0F2FE; border-color: #BAE6FD; color: #0369A1;">'
-                f'<strong>{t["q_label"]}</strong><br/><span style="font-size: 16px;">{current_q}</span></div>', unsafe_allow_html=True)
-
-    backend_lang = "Hindi" if "Hindi" in st.session_state.selected_lang else "English"
-
-    # -------------------------------------------------------------
-    # CASE A: PENDING VOICE TRANSCRIPT REVIEW (Human-in-the-loop)
-    # -------------------------------------------------------------
-    if st.session_state.pending_voice is not None:
-        pv = st.session_state.pending_voice
-        p_trans = pv.get("transcript", "")
-        p_lang = pv.get("language", backend_lang)
-        p_conf = pv.get("confidence")
-        conf_pct = int(p_conf * 100) if p_conf is not None else 0
-        conf_status = "Good acoustic signal" if (p_conf or 0) >= 0.70 else "⚠️ Lower acoustic confidence — please verify accuracy"
-
-        st.markdown(f"""
-        <div style="background-color: #F5F3FF; border: 2px solid #C4B5FD; border-radius: 8px; padding: 14px; margin-bottom: 12px;">
-            <h4 style="margin: 0 0 6px 0; color: #5B21B6; font-size: 15px;">{t['voice_transcript_title']}</h4>
-            <div style="font-size: 13px; color: #6D28D9;">
-                Language: <strong>{p_lang.title() if p_lang else 'Auto-detect'}</strong> | Estimated Confidence: <strong>~{conf_pct}% ({conf_status})</strong>
-            </div>
-            <div style="font-size: 11.5px; color: #7C3AED; margin-top: 4px;">
-                ℹ️ <em>Confidence is an automated acoustic estimate, not a guarantee of medical accuracy. Please review and edit your words below.</em>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if st.session_state.get("last_voice_hash") != pv.get("audio_hash"):
-            st.session_state["voice_transcript_edit"] = p_trans
-            st.session_state["last_voice_hash"] = pv.get("audio_hash")
-
-        edited_voice_text = st.text_area(
-            "Review or edit transcribed text before submitting:",
-            value=st.session_state.get("voice_transcript_edit", p_trans),
-            key="voice_transcript_edit",
-            height=100
-        )
-        col_v1, col_v2 = st.columns([2, 1])
-        with col_v1:
-            if st.button(t["voice_confirm_btn"], type="primary", key="btn_confirm_voice", use_container_width=True):
-                if edited_voice_text.strip():
-                    with st.spinner("Submitting verified voice response..."):
-                        try:
-                            send_res = api_client.send_message(
-                                case_id=st.session_state.case_id,
-                                content=edited_voice_text.strip(),
-                                raw_transcript=p_trans,
-                                source_type="voice",
-                                source_language=p_lang,
-                                transcription_confidence=p_conf,
-                                is_confirmed=True
-                            )
-                            st.session_state.messages.append({
-                                "role": "patient",
-                                "content": edited_voice_text.strip(),
-                                "raw_transcript": p_trans,
-                                "source_type": "voice",
-                                "source_language": p_lang,
-                                "transcription_confidence": p_conf
-                            })
-                            if send_res.get("is_emergency"):
-                                st.session_state.is_emergency = True
-                            st.session_state.pending_voice = None
-                            st.session_state.pop("voice_transcript_edit", None)
-                            st.session_state.pop("last_voice_hash", None)
-
-                            q_res = api_client.get_next_question(st.session_state.case_id)
-                            st.session_state.turn_count += 1
-                            if q_res.get("is_terminal") or not q_res.get("next_question") or st.session_state.turn_count > st.session_state.max_turns:
-                                st.session_state.intake_step = "review_edit"
-                            else:
-                                st.session_state.current_question = q_res["next_question"]
-                                st.session_state.messages.append({"role": "assistant", "content": q_res["next_question"]})
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error submitting voice response: {e}")
-                else:
-                    st.warning("Please enter text or discard the recording.")
-        with col_v2:
-            if st.button(t["voice_discard_btn"], key="btn_discard_voice", use_container_width=True):
-                st.session_state.pending_voice = None
-                st.session_state.pop("voice_transcript_edit", None)
-                st.session_state.pop("last_voice_hash", None)
-                st.rerun()
-
-    # -------------------------------------------------------------
-    # CASE B: STANDARD PATIENT INPUT (Typed / Voice / Report OCR)
-    # -------------------------------------------------------------
-    else:
-        # Patient Typed Answer Form
-        with st.form("patient_answer_form", clear_on_submit=True):
-            patient_answer = st.text_input(t["input_label"], placeholder=t["input_placeholder"], key="current_input")
-            col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])
-            with col_btn1:
-                submit_answer = st.form_submit_button(t["send_btn"], type="primary", use_container_width=True)
-            with col_btn2:
-                skip_question = st.form_submit_button(t["skip_btn"], use_container_width=True)
-            with col_btn3:
-                unknown_answer = st.form_submit_button(t["unknown_btn"], use_container_width=True)
-
-        content_to_send = None
-        if submit_answer:
-            if patient_answer.strip():
-                content_to_send = patient_answer.strip()
-            else:
-                st.warning("Please enter your answer or click 'Skip' / 'I Don't Know'.")
-        elif skip_question:
-            content_to_send = "I choose to skip this question." if "English" in st.session_state.selected_lang else "मैं इस प्रश्न को छोड़ना चाहता हूँ।"
-        elif unknown_answer:
-            content_to_send = "I do not know or am not sure of the answer to this question." if "English" in st.session_state.selected_lang else "मुझे इस प्रश्न का उत्तर निश्चित रूप से नहीं पता है।"
-
-        if content_to_send:
-            with st.spinner("Processing your response..."):
+        # Helper function to send message & advance questioning
+        def handle_patient_input(text_content: str, source_type: str = "patient_typed", raw_transcript: str = None, conf: float = None):
+            if not text_content.strip():
+                return
+            with st.spinner("CareFlow is analyzing symptoms and preparing next clinical question..."):
                 try:
-                    send_res = api_client.send_message(
-                        st.session_state.case_id,
-                        content_to_send,
-                        source_type="patient_typed",
-                        source_language=backend_lang,
+                    # 1. Initialize case if not exists
+                    if not st.session_state.case_id:
+                        new_case = api_client.create_case(
+                            preferred_language=active_lang,
+                            chief_complaint=text_content.strip()
+                        )
+                        st.session_state.case_id = new_case["id"]
+
+                    # 2. Append message to backend
+                    msg_res = api_client.send_message(
+                        case_id=st.session_state.case_id,
+                        content=text_content.strip(),
+                        raw_transcript=raw_transcript,
+                        source_type=source_type,
+                        source_language=active_lang,
+                        transcription_confidence=conf,
                         is_confirmed=True
                     )
                     st.session_state.messages.append({
                         "role": "patient",
-                        "content": content_to_send,
-                        "source_type": "patient_typed",
-                        "source_language": backend_lang
+                        "content": text_content.strip(),
+                        "raw_transcript": raw_transcript,
+                        "source_type": source_type,
+                        "source_language": active_lang,
+                        "transcription_confidence": conf
                     })
-
-                    if send_res.get("is_emergency"):
+                    if msg_res.get("is_emergency"):
                         st.session_state.is_emergency = True
 
+                    # 3. Request next MedGemma follow-up question
                     q_res = api_client.get_next_question(st.session_state.case_id)
                     st.session_state.turn_count += 1
 
-                    if q_res.get("is_terminal") or not q_res.get("next_question") or st.session_state.turn_count > st.session_state.max_turns:
-                        st.session_state.intake_step = "review_edit"
+                    if q_res.get("is_terminal") or not q_res.get("next_question") or st.session_state.turn_count >= st.session_state.max_turns:
+                        st.session_state.intake_mode = "review"
                     else:
-                        st.session_state.current_question = q_res["next_question"]
-                        st.session_state.messages.append({"role": "assistant", "content": q_res["next_question"]})
-
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": q_res["next_question"],
+                            "content_en": q_res.get("next_question_en") or q_res["next_question"],
+                            "content_hi": q_res.get("next_question_hi")
+                        })
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Error processing message: {e}")
+                    st.error(f"Error communicating with clinical backend: {e}")
 
-        # Multimodal Input Expanders
-        col_exp1, col_exp2 = st.columns(2)
+        # -------------------------------------------------------------
+        # UNIFIED CLINICAL INPUT DOCK (Integrated Toolbar & Input Area)
+        # -------------------------------------------------------------
+        with st.container(border=True):
+            # Row 1: Quick Action Response Chips (Skip, Unknown, Review)
+            col_act1, col_act2, col_act3 = st.columns([1, 1, 1.2])
+            with col_act1:
+                skip_btn_label = "⏩ Skip Question" if active_lang == "English" else ("⏩ प्रश्न छोड़ें" if active_lang == "Hindi" else "⏩ Skip Question")
+                if st.button(skip_btn_label, key="btn_skip_q", use_container_width=True):
+                    skip_text = "I prefer to skip this question." if active_lang == "English" else ("मैं इस प्रश्न को छोड़ना चाहता हूँ।" if active_lang == "Hindi" else "Main is question ko skip karna chahta hoon.")
+                    handle_patient_input(skip_text, source_type="patient_typed")
+            with col_act2:
+                unk_btn_label = "❓ Not Sure" if active_lang == "English" else ("❓ पता नहीं" if active_lang == "Hindi" else "❓ Not Sure / Don't Know")
+                if st.button(unk_btn_label, key="btn_unk_q", use_container_width=True):
+                    unk_text = "I do not know or am not sure of the answer." if active_lang == "English" else ("मुझे इसका उत्तर निश्चित रूप से नहीं पता है।" if active_lang == "Hindi" else "Mujhe sure nahi pata is baare me.")
+                    handle_patient_input(unk_text, source_type="patient_typed")
+            with col_act3:
+                rev_btn_label = "📋 Review & Submit" if active_lang == "English" else ("📋 समीक्षा और जमा करें" if active_lang == "Hindi" else "📋 Review & Submit")
+                if st.button(rev_btn_label, key="btn_early_sub", use_container_width=True):
+                    if st.session_state.messages:
+                        st.session_state.intake_mode = "review"
+                        st.rerun()
+                    else:
+                        st.warning("Please enter your symptoms before reviewing.")
 
-        with col_exp1:
-            with st.expander(t["voice_header"], expanded=False):
-                st.caption(t["voice_help"])
-                rec_audio = None
-                if hasattr(st, "audio_input"):
-                    rec_audio = st.audio_input("Record audio (Mic)", key="mic_audio_chat")
-                upl_audio = st.file_uploader(
-                    "Or upload voice file (WAV, MP3, M4A, OGG, WEBM, FLAC)",
-                    type=["wav", "mp3", "m4a", "ogg", "webm", "flac"],
-                    key="upl_audio_chat"
-                )
-                chosen_audio = rec_audio or upl_audio
-                if chosen_audio is not None:
-                    audio_bytes = chosen_audio.getvalue()
+            # Row 2: Unified Input Mode Selector (Type vs Mic vs Report Upload)
+            selected_mode = st.segmented_control(
+                "Input Method",
+                ["💬 Type Symptoms", "🎙️ Voice Input", "📎 Attach Report"],
+                default="💬 Type Symptoms",
+                key="input_dock_mode_control",
+                label_visibility="collapsed"
+            ) or "💬 Type Symptoms"
+
+            # Mode Details rendering seamlessly inside the dock
+            if selected_mode == "🎙️ Voice Input":
+                st.markdown("""
+                <div class="dock-mode-card">
+                    <div class="dock-title">🎙️ Voice Symptom Dictation</div>
+                    <div class="dock-desc">
+                        Press the microphone button below to record your symptoms. Speak naturally in <strong>English, Hindi, or Hinglish</strong>.
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                audio_prompt = st.audio_input(label="Voice recording input", label_visibility="collapsed", key="dock_audio_input")
+                audio_file_upl = st.file_uploader("Or upload an audio clip (.wav, .mp3, .m4a)", type=["wav", "mp3", "m4a", "ogg"], key="dock_audio_file_upl")
+                
+                incoming_audio = None
+                incoming_filename = "patient_speech.wav"
+                if audio_prompt is not None:
+                    incoming_audio = audio_prompt.getvalue()
+                elif audio_file_upl is not None:
+                    incoming_audio = audio_file_upl.getvalue()
+                    incoming_filename = audio_file_upl.name
+
+                if incoming_audio is not None:
+                    audio_bytes = incoming_audio
                     audio_hash = hashlib.sha256(audio_bytes).hexdigest()
-                    if st.session_state.pending_voice and st.session_state.get("last_voice_hash") != audio_hash:
-                        st.session_state.pending_voice = None
-                        st.session_state.pop("voice_transcript_edit", None)
-
-                    if st.button("Transcribe Audio 🎙️", type="primary", key="btn_run_transcribe", use_container_width=True):
-                        with st.spinner("Transcribing voice recording..."):
+                    if audio_hash not in st.session_state.processed_audio_hashes:
+                        st.session_state.processed_audio_hashes.add(audio_hash)
+                        with st.spinner("Transcribing your voice recording..."):
                             try:
-                                fname = getattr(chosen_audio, "name", "recording.wav") or "recording.wav"
-                                t_res = api_client.transcribe_audio(
+                                trans_res = api_client.transcribe_audio(
                                     file_bytes=audio_bytes,
-                                    filename=fname,
+                                    filename=incoming_filename,
                                     language=asr_lang
                                 )
-                                t_res["audio_hash"] = audio_hash
-                                st.session_state.pending_voice = t_res
-                                st.session_state["voice_transcript_edit"] = t_res.get("transcript", "")
-                                st.session_state["last_voice_hash"] = audio_hash
-                                st.rerun()
+                                transcript = trans_res.get("transcript", "").strip()
+                                conf = trans_res.get("confidence")
+                                if transcript:
+                                    st.info(f"🎤 Transcribed: &ldquo;{transcript}&rdquo;")
+                                    handle_patient_input(
+                                        text_content=transcript,
+                                        source_type="voice",
+                                        raw_transcript=transcript,
+                                        conf=conf
+                                    )
+                                else:
+                                    st.warning("No speech detected. Please speak clearly or type below.")
                             except Exception as e:
-                                st.error(f"⚠️ {e}")
+                                st.error(f"Voice transcription error: {e}")
 
-        with col_exp2:
-            with st.expander(t["upload_during_chat"], expanded=False):
-                st.caption("Upload prescription or report image/PDF to attach to your record.")
-                doc_in_chat = st.file_uploader(
-                    "Upload image or PDF (PNG, JPG, PDF)",
-                    type=["pdf", "png", "jpg", "jpeg", "webp"],
-                    key="doc_chat"
-                )
-                if doc_in_chat is not None:
-                    if st.button("Attach & Scan Document 📄", type="secondary", key="btn_run_attach_doc", use_container_width=True):
-                        with st.spinner("Scanning and securely attaching medical document..."):
+            elif selected_mode == "📎 Attach Report":
+                st.markdown("""
+                <div class="dock-mode-card">
+                    <div class="dock-title">📎 Attach Medical Prescription or Lab Report</div>
+                    <div class="dock-desc">
+                        Upload an image or PDF of prescriptions or diagnostic test results. Clinical OCR will extract text into your intake file.
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                upl_doc = st.file_uploader("Upload Medical Document", type=["png", "jpg", "jpeg", "pdf"], key="dock_file_upl", label_visibility="collapsed")
+                if upl_doc is not None:
+                    if st.button("Scan & Attach Document 📄", key="btn_dock_attach_doc", type="primary", use_container_width=True):
+                        with st.spinner("Extracting medical information via clinical OCR..."):
                             try:
-                                file_bytes = doc_in_chat.getvalue()
-                                up_res = api_client.upload_document(
-                                    case_id=st.session_state.case_id,
-                                    file_bytes=file_bytes,
-                                    filename=doc_in_chat.name
-                                )
-                                c_count = up_res.get("char_count", 0)
-                                engine = up_res.get("engine_used", "winocr")
-                                conf = up_res.get("confidence", 0.9)
+                                if not st.session_state.case_id:
+                                    new_case = api_client.create_case(
+                                        preferred_language=active_lang,
+                                        chief_complaint=f"Attached Medical Document: {upl_doc.name}"
+                                    )
+                                    st.session_state.case_id = new_case["id"]
 
-                                st.session_state.uploaded_docs.append({
-                                    "name": doc_in_chat.name,
-                                    "char_count": c_count,
-                                    "engine_used": engine,
-                                    "confidence": conf
-                                })
+                                doc_res = api_client.upload_document(st.session_state.case_id, upl_doc.getvalue(), upl_doc.name)
+                                st.session_state.uploaded_docs.append(upl_doc.name)
                                 st.session_state.messages.append({
                                     "role": "patient",
-                                    "content": f"[Attached Medical Document: {doc_in_chat.name} ({c_count} chars extracted via {engine})]",
+                                    "content": f"[Attached Medical Document: {upl_doc.name} ({doc_res.get('char_count', 0)} characters extracted)]",
                                     "source_type": "ocr"
                                 })
-                                if up_res.get("is_emergency"):
-                                    st.session_state.is_emergency = True
-
                                 # Advance question
                                 q_res = api_client.get_next_question(st.session_state.case_id)
                                 st.session_state.turn_count += 1
-                                if q_res.get("is_terminal") or not q_res.get("next_question") or st.session_state.turn_count > st.session_state.max_turns:
-                                    st.session_state.intake_step = "review_edit"
-                                else:
-                                    st.session_state.current_question = q_res["next_question"]
-                                    st.session_state.messages.append({"role": "assistant", "content": q_res["next_question"]})
-
+                                if q_res.get("next_question"):
+                                    st.session_state.messages.append({
+                                        "role": "assistant",
+                                        "content": q_res["next_question"],
+                                        "content_en": q_res.get("next_question_en") or q_res["next_question"],
+                                        "content_hi": q_res.get("next_question_hi")
+                                    })
+                                st.success(f"Document '{upl_doc.name}' attached to clinical file.")
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Error attaching document: {e}")
+                                st.error(f"Error scanning document: {e}")
 
-    # Early submission option
-    st.write("---")
-    col_early, _ = st.columns([2, 1])
-    with col_early:
-        if st.button(t["early_submit_btn"], use_container_width=True):
-            st.session_state.intake_step = "review_edit"
-            st.rerun()
+        # Primary Chat Input (always accessible and pinned at the bottom)
+        input_placeholder = "Describe your symptoms, location, pain intensity, duration... (Type here)" if active_lang == "English" else ("अपने लक्षणों, दर्द और परेशानी के बारे में यहाँ लिखें..." if active_lang == "Hindi" else "Apne symptoms, pain intensity aur duration yahan type karein...")
+        chat_text = st.chat_input(input_placeholder)
+        if chat_text:
+            handle_patient_input(chat_text, source_type="patient_typed")
 
-# =====================================================================
-# STEP 3: PRE-SUBMISSION REVIEW & EDIT SCREEN
-# =====================================================================
-elif st.session_state.intake_step == "review_edit":
-    st.subheader(t["review_title"])
-    st.write(t["review_subtitle"])
+    # -----------------------------------------------------------------
+    # MODE 2: REVIEW & EDIT BEFORE CLINICIAN SUBMISSION
+    # -----------------------------------------------------------------
+    elif st.session_state.intake_mode == "review":
+        st.subheader("📋 Review Your Clinical Statements")
+        st.write("Please review your reported symptoms. You may edit your words before submitting to the hospital clinical queue.")
 
-    if st.session_state.uploaded_docs:
-        with st.expander(f"📄 Uploaded Documents ({len(st.session_state.uploaded_docs)})", expanded=True):
-            for d in st.session_state.uploaded_docs:
-                st.markdown(f"- **{d['name']}** ({d['char_count']} chars extracted via OCR)")
-                if d.get("ocr_preview"):
-                    st.caption(f"Preview: {d['ocr_preview'][:200]}...")
+        patient_msgs = [m for m in st.session_state.messages if m.get("role") in ("patient", "user")]
+        edited_inputs = []
 
-    patient_responses = [m["content"] for m in st.session_state.messages if m["role"] == "patient"]
-
-    edited_texts = []
-    for idx, resp in enumerate(patient_responses):
-        with st.container():
-            st.markdown(f"**Item {idx+1}:**")
-            new_text = st.text_area(
-                f"Response #{idx+1}",
-                value=resp,
-                key=f"edit_resp_{idx}",
+        for idx, m in enumerate(patient_msgs):
+            st.markdown(f"**Item {idx + 1} ({m.get('source_type', 'typed')}):**")
+            val = st.text_area(
+                f"Item {idx + 1}",
+                value=m.get("content", ""),
+                height=80,
+                key=f"edit_patient_item_{idx}",
                 label_visibility="collapsed"
             )
-            edited_texts.append(new_text)
+            edited_inputs.append((m.get("content", ""), val))
 
-    col_sub, col_add = st.columns([2, 1])
-    with col_sub:
-        if st.button(t["submit_btn"], type="primary", use_container_width=True):
-            with st.spinner("Submitting intake to clinical reviewer queue..."):
-                try:
-                    # Check if patient modified any responses, if so send updated statement
-                    for i, (orig, edited) in enumerate(zip(patient_responses, edited_texts)):
-                        if orig != edited and edited.strip():
-                            api_client.send_message(
-                                st.session_state.case_id,
-                                f"Correction to Item #{i+1}: {edited.strip()}"
-                            )
+        col_sub1, col_sub2 = st.columns([2, 1])
+        with col_sub1:
+            if st.button("Submit Intake for Healthcare Professional Review ✅", type="primary", use_container_width=True):
+                with st.spinner("Submitting clinical intake to hospital reviewer queue..."):
+                    try:
+                        # Send any corrected items
+                        for i, (orig, edited) in enumerate(edited_inputs):
+                            if orig != edited and edited.strip():
+                                api_client.send_message(
+                                    case_id=st.session_state.case_id,
+                                    content=f"Correction to Item #{i+1}: {edited.strip()}",
+                                    source_type="patient_correction"
+                                )
+                        # Submit case
+                        api_client.submit_case(st.session_state.case_id)
+                        st.session_state.intake_mode = "submitted"
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error submitting intake: {e}")
 
-                    # Finalize submission
-                    submit_res = api_client.submit_case(st.session_state.case_id)
-                    st.session_state.intake_step = "submitted"
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Submission error: {e}")
+        with col_sub2:
+            if st.button("← Back to Chat", use_container_width=True):
+                st.session_state.intake_mode = "chat"
+                st.rerun()
 
-    with col_add:
-        if st.button(t["return_btn"], use_container_width=True):
-            st.session_state.intake_step = "chatting"
-            st.rerun()
+    # -----------------------------------------------------------------
+    # MODE 3: SUBMISSION CONFIRMATION
+    # -----------------------------------------------------------------
+    elif st.session_state.intake_mode == "submitted":
+        st.balloons()
+        st.success("🎉 Your clinical intake has been successfully submitted to the hospital triage queue!")
 
-# =====================================================================
-# STEP 4: SUBMISSION CONFIRMATION
-# =====================================================================
-elif st.session_state.intake_step == "submitted":
-    st.balloons()
-    st.success(t["success_title"])
-
-    st.markdown(f"""
-    <div class="card-review">
-        <h3>{t['confirm_card_title']}</h3>
-        <p><strong>{t['case_id_label']}:</strong> <code>{st.session_state.case_id}</code></p>
-        <p><strong>Status:</strong> {t['confirm_status']}</p>
-        <p>{t['confirm_body']}</p>
-        <div style="background: #F1F5F9; padding: 12px; border-radius: 6px; font-size: 13.5px; color: #475569;">
-            {t['safety_reminder']}
+        st.markdown(f"""
+        <div class="card-confirm">
+            <h3 style="margin-top:0; color:#0F766E;">Clinical Intake Confirmation</h3>
+            <p><strong>Case ID:</strong> <code>{st.session_state.case_id}</code></p>
+            <p><strong>Status:</strong> Queued for Licensed Healthcare Professional Review</p>
+            <p>Your responses have been securely transferred to the hospital command center. A clinician will inspect your file, LightGBM clinical risk predictions, and MedGemma evidence summary.</p>
+            <div style="background:#F1F5F9; border-radius:8px; padding:14px; font-size:13px; color:#475569; margin-top:14px; line-height:1.5;">
+                <strong>Emergency Reminder:</strong> CareFlow is an automated clinical assistant prototype and does not provide a definitive diagnosis. If your symptoms worsen or you develop severe chest pain or shortness of breath, call 112 / 911 immediately.
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-    if st.button(t["restart_btn"], use_container_width=True):
-        st.session_state.case_id = None
-        st.session_state.intake_step = "start"
-        st.session_state.messages = []
-        st.session_state.current_question = None
-        st.session_state.is_emergency = False
-        st.session_state.turn_count = 0
-        st.session_state.uploaded_docs = []
-        st.rerun()
+        if st.button("Start Another Patient Intake 🔄", type="primary", use_container_width=True):
+            reset_intake_session()
+            st.rerun()

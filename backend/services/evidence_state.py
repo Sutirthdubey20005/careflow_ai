@@ -196,3 +196,5 @@ class EvidenceStateManager:
         db.commit()
 
         return new_state
+
+evidence_state_service = EvidenceStateManager()

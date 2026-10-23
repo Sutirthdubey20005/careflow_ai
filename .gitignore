@@ -23,4 +23,13 @@ __pycache__/
 evaluation_results/
 
 # Streamlit config/cache
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
+
+# Hugging Face Space local repo clone
+hf_space/
+
+# Large Model Weights (GGUF)
+*.gguf
+models/*.gguf
+scripts/test_*.py

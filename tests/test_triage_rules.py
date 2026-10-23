@@ -245,4 +245,40 @@ def test_p2_multiple_unknown_intake_dimensions():
     )
     assert res.priority_category == "P2"
     assert any(t.rule_id == "RULE-P2-INCOMPLETE-03" for t in res.triggered_rules)
+    assert res.decision_path == "multidimensional_acuity_synthesis"
+
+
+def test_triage_decision_paths_multi_tier():
+    """Verify that triage engine correctly records decision_path across all tiers."""
+    # 1. Tier 1: Model Urgency Reasoning
+    model_sig_evidence = {
+        "urgency_signals": [
+            {
+                "signal": "Acute Surgical Abdomen",
+                "severity_level": "urgent",
+                "rationale": "Peritoneal irritation requiring urgent assessment",
+                "source_quote": "intense belly pain and vomiting"
+            }
+        ]
+    }
+    res_model = triage_engine.evaluate(model_sig_evidence, ["intense belly pain and vomiting"])
+    assert res_model.priority_category == "P1"
+    assert res_model.decision_path == "model_urgency_reasoning"
+
+    # 2. Tier 2: Multidimensional Acuity Synthesis (Severe Pain score 9/10)
+    acuity_evidence = {"facts": {"severity": "9/10"}}
+    res_acuity = triage_engine.evaluate(acuity_evidence, ["My toe hurts really badly", "9/10"])
+    assert res_acuity.priority_category == "P1"
+    assert res_acuity.decision_path == "multidimensional_acuity_synthesis"
+
+    # 3. Tier 3: Protocol Safety Guardrail Floor (radiating chest pain without prior model signal)
+    res_guardrail = triage_engine.evaluate({}, ["Crushing chest pain radiating to left arm"])
+    assert res_guardrail.priority_category == "P0"
+    assert res_guardrail.decision_path == "protocol_safety_guardrail"
+
+    # 4. Tier 4: System Fallback
+    res_sys = triage_engine.evaluate({}, ["General malaise"], ai_status="failed")
+    assert res_sys.priority_category == "ERR"
+    assert res_sys.decision_path == "system_fallback"
+
 

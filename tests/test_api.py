@@ -210,3 +210,76 @@ def test_api_reviewer_queue_reflects_actual_db_priority_counts(client):
     assert case_map[c1] == "P3"
     assert case_map[c2] == "P1"
 
+
+def test_api_delete_case(client):
+    """Verifies permanent deletion of a case and all associated cascade items."""
+    # Create case with message
+    c = client.post("/cases", json={"chief_complaint": "temporary patient case"}).json()
+    case_id = c["id"]
+    client.post(f"/cases/{case_id}/messages", json={"content": "I am feeling unwell today."})
+
+    # Verify exists
+    assert client.get(f"/cases/{case_id}").status_code == 200
+
+    # Delete case
+    del_resp = client.delete(f"/cases/{case_id}")
+    assert del_resp.status_code == 200
+    assert del_resp.json()["status"] == "deleted"
+    assert del_resp.json()["case_id"] == case_id
+
+    # Verify 404 on get
+    assert client.get(f"/cases/{case_id}").status_code == 404
+
+    # Deleting again returns 404
+    assert client.delete(f"/cases/{case_id}").status_code == 404
+
+
+def test_api_mark_case_done(client):
+    """Verifies marking a patient case as done/completed in the queue."""
+    c = client.post("/cases", json={"chief_complaint": "ankle sprain for review"}).json()
+    case_id = c["id"]
+    client.post(f"/cases/{case_id}/messages", json={"content": "Twisted ankle while playing soccer."})
+    client.post(f"/cases/{case_id}/submit")
+
+    # Mark done
+    done_resp = client.post(f"/cases/{case_id}/mark-done?notes=Patient discharged with RICE instructions.")
+    assert done_resp.status_code == 200
+    assert done_resp.json()["status"] == "success"
+    assert done_resp.json()["review_status"] == "done"
+
+    # Verify case details
+    case_detail = client.get(f"/cases/{case_id}").json()
+    assert case_detail["review_status"] == "done"
+    assert case_detail["reviewer_notes"] == "Patient discharged with RICE instructions."
+
+    # Verify queue filter by review_status=done
+    done_cases = client.get("/cases?review_status=done").json()
+    assert any(c["id"] == case_id for c in done_cases)
+
+
+def test_api_reviewer_adjust_priority_himself(client):
+    """Verifies reviewer can adjust priority himself, changing queue ordering."""
+    c = client.post("/cases", json={"chief_complaint": "mild ear discomfort"}).json()
+    case_id = c["id"]
+    client.post(f"/cases/{case_id}/messages", json={"content": "Ear feels slightly blocked."})
+    client.post(f"/cases/{case_id}/submit")
+
+    # Initial priority should be routine P3
+    initial = client.get(f"/cases/{case_id}").json()
+    assert initial["priority_category"] == "P3"
+
+    # Reviewer adjusts priority to P1
+    adj_resp = client.post(f"/cases/{case_id}/override-priority", json={
+        "new_priority": "P1",
+        "reason": "Clinician noted severe vertigo and suspected labyrinthitis.",
+        "reviewer_name": "Dr. Triage"
+    })
+    assert adj_resp.status_code == 200
+    assert adj_resp.json()["new_priority"] == "P1"
+
+    # Check updated case
+    updated = client.get(f"/cases/{case_id}").json()
+    assert updated["priority_category"] == "P1"
+    assert updated["reviewer_priority"] == "P1"
+
+

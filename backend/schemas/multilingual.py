@@ -15,6 +15,20 @@ class TranscriptionResult(BaseModel):
     segments: List[Dict[str, Any]] = Field(default_factory=list, description="Word/phrase segments with timestamps")
 
 
+class StructuredMedicalFact(BaseModel):
+    """Structured extraction of a single laboratory test, measurement, or vital."""
+    measurement_name: str = Field(..., description="Name of test, parameter, or measurement")
+    numeric_value: Optional[float] = Field(None, description="Parsed numeric value if present")
+    raw_value: str = Field(..., description="Verbatim raw text value from report")
+    unit: Optional[str] = Field(None, description="Measurement unit (e.g. mmHg, bpm, mg/dL)")
+    reference_range: Optional[str] = Field(None, description="Reported reference or normal range")
+    report_date: Optional[str] = Field(None, description="Document date or collection date if printed")
+    location: Optional[str] = Field(None, description="Location in text / page")
+    confidence: float = Field(1.0, description="Extraction confidence score (0.0 to 1.0)")
+    is_uncertain: bool = Field(False, description="Flagged if value is out of plausible physiological bounds or ambiguous")
+    uncertainty_reason: Optional[str] = Field(None, description="Reason why fact was flagged as uncertain")
+
+
 class DocumentExtractionResult(BaseModel):
     """Result of document OCR or text extraction before confirmation."""
     filename: str = Field(..., description="Original filename of the uploaded report")
@@ -24,6 +38,12 @@ class DocumentExtractionResult(BaseModel):
     confidence: float = Field(1.0, description="Estimated extraction confidence (0.0 to 1.0)")
     source_type: Literal["ocr_extraction"] = "ocr_extraction"
     is_mock: bool = Field(False, description="True if generated in mock environment")
+    is_medical_document: bool = Field(True, description="Whether the document is detected as medical")
+    medical_document_confidence: float = Field(1.0, description="Confidence that document is clinical/medical")
+    detected_document_type: str = Field("general_medical_report", description="Report category: lab_report, prescription, discharge_summary, etc.")
+    structured_facts: List[StructuredMedicalFact] = Field(default_factory=list, description="Extracted structured medical parameters")
+    extracted_vitals: Dict[str, Any] = Field(default_factory=dict, description="Extracted continuous vitals for ML urgency classifier")
+    pii_redaction_count: int = Field(0, description="Count of masked patient identifiers")
 
 
 class ConfirmedMessageRequest(BaseModel):

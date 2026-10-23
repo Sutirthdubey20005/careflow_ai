@@ -216,11 +216,7 @@ def test_voice_transcription_patient_confirmation_flow(client, db_session):
 
 def test_real_faster_whisper_tiny_local_transcription():
     """Priority 2: Benchmark and verify real local faster-whisper execution with 'tiny' model."""
-    try:
-        import faster_whisper
-    except ImportError:
-        pytest.skip("faster-whisper is not installed in this environment; skipping local model benchmark.")
-
+    pytest.importorskip("faster_whisper", reason="faster-whisper is not installed in this environment")
     import sys
     import subprocess
 

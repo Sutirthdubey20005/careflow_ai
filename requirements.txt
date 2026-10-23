@@ -5,13 +5,32 @@ sqlalchemy>=2.0.0
 python-dotenv>=1.0.0
 httpx>=0.27.0
 python-multipart>=0.0.9
+lightgbm>=4.0.0
+pandas>=2.0.0
+joblib>=1.3.0
+scikit-learn>=1.4.0
+
 
 # Voice & Speech Processing (Deepgram Hinglish STT / TTS)
 deepgram-sdk>=3.0.0
 
-# Document Processing & OCR
+# Document Processing & OCR (PDF, JPEG, PNG)
 pypdf>=4.0.0
-winocr>=0.0.15
+rapidocr-onnxruntime>=1.3.0
+onnxruntime>=1.17.0
+winocr>=0.0.15; sys_platform == 'win32'
+pillow>=10.0.0
+
+# Tabular Machine Learning & Triage Classifier
+lightgbm>=4.0.0
+joblib>=1.3.0
+pandas>=2.0.0
+scikit-learn>=1.4.0
+
+# Fine-Tuned MedGemma SLM & Adapter Support
+peft>=0.10.0
+transformers>=4.40.0
+accelerate>=0.29.0
 
 # Frontend
 streamlit>=1.32.0
@@ -20,9 +39,3 @@ requests>=2.31.0
 # Testing & Quality
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
-
-# Optional: MedGemma Local Inference (Uncomment if GPU / High RAM CPU environment is configured)
-# torch>=2.2.0
-# transformers>=4.40.0
-# accelerate>=0.29.0
-# bitsandbytes>=0.43.0

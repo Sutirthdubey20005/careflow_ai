@@ -24,10 +24,19 @@ class Case(Base):
     
     # Priority triage: 'P0', 'P1', 'P2', 'P3', 'ERR'
     priority_category = Column(String(16), default="P3", nullable=False, index=True)
+    ml_model_triage = Column(String(16), default="P3", nullable=True)
+    ml_confidence = Column(Float, default=0.0, nullable=True)
     priority_reasons_json = Column(Text, default="[]", nullable=False)
     missing_information_json = Column(Text, default="[]", nullable=False)
     uncertainties_json = Column(Text, default="[]", nullable=False)
     triage_rule_version = Column(String(32), default="v1.0.0-prototype", nullable=False)
+    # Final Guarded Triage Result (Primary Displayed Signal)
+    final_triage = Column(String(16), default="P3", nullable=True)
+    rule_based_triage = Column(String(16), default="P3", nullable=True)
+    escalation_applied = Column(Boolean, default=False, nullable=True)
+    escalation_reason = Column(Text, nullable=True)
+    selected_model_provider = Column(String(32), default="finetuned_medgemma", nullable=True)
+    decision_path = Column(String(64), default="model_urgency_reasoning", nullable=True)
     
     # Reviewer workflow: 'pending', 'reviewed', 'approved', 'reopened'
     review_status = Column(String(32), default="pending", nullable=False, index=True)
@@ -42,6 +51,8 @@ class Case(Base):
     audit_events = relationship("AuditEvent", back_populates="case", cascade="all, delete-orphan", order_by="AuditEvent.created_at")
 
     def to_dict(self):
+        ml_prio = getattr(self, "ml_model_triage", None) or self.priority_category
+        ml_conf = float(getattr(self, "ml_confidence", 0.0) or 0.0)
         return {
             "id": self.id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -52,10 +63,20 @@ class Case(Base):
             "ai_summary": json.loads(self.ai_summary_json or "{}"),
             "ai_status": self.ai_status,
             "priority_category": self.priority_category,
+            "final_triage": getattr(self, "final_triage", None) or self.priority_category,
+            "rule_based_priority": getattr(self, "rule_based_triage", None) or self.priority_category,
+            "rule_based_triage": getattr(self, "rule_based_triage", None) or self.priority_category,
+            "ml_model_priority": ml_prio,
+            "ml_model_triage": ml_prio,
+            "ml_confidence": ml_conf,
+            "escalation_applied": bool(getattr(self, "escalation_applied", False)),
+            "escalation_reason": getattr(self, "escalation_reason", None),
+            "selected_model_provider": getattr(self, "selected_model_provider", None) or "finetuned_medgemma",
             "priority_reasons": json.loads(self.priority_reasons_json or "[]"),
             "missing_information": json.loads(self.missing_information_json or "[]"),
             "uncertainties": json.loads(self.uncertainties_json or "[]"),
             "triage_rule_version": self.triage_rule_version,
+            "decision_path": getattr(self, "decision_path", None) or "model_urgency_reasoning",
             "review_status": self.review_status,
             "reviewer_summary": self.reviewer_summary,
             "reviewer_priority": self.reviewer_priority,

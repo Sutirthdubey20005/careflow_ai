@@ -3,6 +3,7 @@ import logging
 from typing import Dict, Any, List, Optional
 from backend.schemas.clinical import TriageResult, TriageTrigger
 from backend.config import settings
+from backend.ml_triage_service import predict_urgency_lgbm
 
 logger = logging.getLogger("careflow.triage")
 
@@ -41,7 +42,7 @@ class DeterministicTriageEngine:
             "id": "RULE-P0-RESP-02",
             "name": "Acute Severe Respiratory Compromise",
             "criterion": "Severe shortness of breath, inability to speak full sentences, or stridor",
-            "pattern": r"(can't\s*breathe|cannot\s*breathe|gasping|severe\s*shortness\s*of\s*breath|stridor|choking|सांस\s*फूल|दम\s*फूल|सांस\s*लेने\s*में\s*(?:.{0,20}?)(?:तकलीफ|दिक्कत|परेशानी)|दम\s*घुट|सांस\s*नहीं\s*आ\s*रही|saans\s*lene\s*me\s*takleef|dam\s*phool\s*raha)",
+            "pattern": r"(can't\s*breathe|cannot\s*breathe|gasping|severe\s*shortness\s*of\s*breath|stridor|choking|सांस\s*फूल|दम\s*फूल|सांस\s*लेने\s*में\s*(?:.{0,20}?)(?:तकलीफ|दिक्कत|परेशानी)|दम\s*घुट|सांस\s*नहीं\s*आ\s*रही|saans\s*lene\s*me\s*takleef|dam\s*phool\s*raha|sa?ns\s*(?:nhe|nahi|nahin|ni)\s*(?:liya|li)\s*ja\s*rh?a|sa?ns\s*n(?:ahi|he|hin)\s*aa?\s*rahi|saans\s*nahi\s*aarahi)",
             "action": "Immediate respiratory assessment and oxygenation support."
         },
         {
@@ -152,17 +153,146 @@ class DeterministicTriageEngine:
         self,
         evidence_state: Dict[str, Any],
         raw_messages: List[str],
-        ai_status: str = "ready"
+        ai_status: str = "ready",
+        vitals: Optional[Dict[str, Any]] = None,
+        lab_vitals: Optional[Dict[str, Any]] = None
+    ) -> TriageResult:
+        """
+        Main triage orchestrator method with deterministic safety gate.
+        Combines deterministic rules (ESI/MTS protocol with continuous vitals thresholds)
+        alongside trained LightGBM urgency classifier with safety override.
+        """
+        effective_vitals = vitals if vitals is not None else lab_vitals
+        from backend.ml_triage_service import predict_urgency_lgbm_with_details, extract_vitals_with_metadata
+        all_text = " ".join(raw_messages)
+        active_vitals_input = effective_vitals if effective_vitals is not None else evidence_state.get("vitals")
+        parsed_vitals, imputed_features = extract_vitals_with_metadata(active_vitals_input, all_text)
+
+        # 1. Evaluate deterministic protocol rules (including vital sign thresholds)
+        rule_result = self._evaluate_rules(
+            evidence_state=evidence_state,
+            raw_messages=raw_messages,
+            ai_status=ai_status,
+            vitals=parsed_vitals,
+            imputed_fields=imputed_features
+        )
+        rule_based_triage = rule_result.priority_category
+
+        # If system failure (ERR), return immediately
+        if rule_based_triage == "ERR":
+            rule_result.rule_based_triage = "ERR"
+            rule_result.final_triage = "ERR"
+            rule_result.ml_model_triage = None
+            rule_result.escalation_applied = True
+            rule_result.escalation_reason = "System failure safeguard triggered."
+            rule_result.model_status = "unavailable"
+            return rule_result
+
+        # 2. Call trained LightGBM urgency model
+        ml_model_triage = None
+        model_status = "available"
+        ml_details = {}
+        ml_confidence = 0.0
+        try:
+            slm_features = evidence_state.get("slm_extraction") or evidence_state
+            ml_details = predict_urgency_lgbm_with_details(slm_features, parsed_vitals) or {}
+            ml_model_triage = ml_details.get("predicted_tier")
+            model_status = ml_details.get("model_status", "available")
+            imputed_features = ml_details.get("imputed_features", imputed_features)
+        except Exception as e:
+            logger.warning(f"LightGBM ML triage prediction failed: {e}")
+            model_status = "error"
+            ml_model_triage = None
+            ml_details = {}
+
+        # 3. Deterministic Safety Gate Decision Layer
+        final_triage = rule_based_triage
+        escalation_applied = False
+        escalation_reason = None
+
+        is_confident_ml = False
+        if ml_details and ml_details.get("probabilities"):
+            probs = ml_details["probabilities"]
+            pred_prob = probs.get(ml_model_triage, 0.0)
+            is_confident_ml = pred_prob >= 0.50
+            ml_confidence = pred_prob
+        elif ml_details and ml_details.get("confidence") is not None:
+            try:
+                ml_confidence = float(ml_details["confidence"])
+                is_confident_ml = ml_confidence >= 0.50
+            except (ValueError, TypeError):
+                ml_confidence = 0.0
+
+        if rule_based_triage in ("P0", "P1"):
+            final_triage = rule_based_triage
+            if ml_model_triage and ml_model_triage in ("P2", "P3"):
+                escalation_applied = True
+                rule_name = rule_result.triggered_rules[0].rule_name if rule_result.triggered_rules else "Emergency Red Flag"
+                escalation_reason = f"Deterministic emergency override: Protocol rule '{rule_name}' mandates {rule_based_triage}. Lower-acuity ML prediction ({ml_model_triage}) suppressed for patient safety."
+            elif ml_model_triage == "P0" and rule_based_triage == "P1":
+                final_triage = "P0"
+                escalation_applied = True
+                escalation_reason = "Escalated to P0 (Resuscitation) based on multi-system ML physiological urgency prediction."
+            else:
+                escalation_applied = False
+                escalation_reason = f"Emergency tier {rule_based_triage} verified by clinical protocol."
+        else:
+            if model_status == "available" and ml_model_triage in ("P0", "P1") and is_confident_ml:
+                final_triage = ml_model_triage
+                escalation_applied = True
+                escalation_reason = f"Learned urgency escalation: LightGBM detected high-acuity physiological risk ({ml_model_triage}) exceeding baseline rules ({rule_based_triage})."
+            else:
+                final_triage = rule_based_triage
+                escalation_applied = False
+                escalation_reason = None
+
+        rule_result.priority_category = rule_based_triage
+        rule_result.final_triage = final_triage
+        rule_result.rule_based_priority = rule_based_triage
+        rule_result.rule_based_triage = rule_based_triage
+        rule_result.ml_model_priority = ml_model_triage
+        rule_result.ml_model_triage = ml_model_triage
+        rule_result.escalation_applied = escalation_applied
+        rule_result.escalation_reason = escalation_reason
+        if escalation_applied and rule_based_triage not in ("P0", "P1"):
+            rule_result.decision_path = "multidimensional_acuity_synthesis"
+        rule_result.model_status = model_status
+        rule_result.imputed_features = imputed_features
+        return rule_result
+
+    def _evaluate_rules(
+        self,
+        evidence_state: Dict[str, Any],
+        raw_messages: List[str],
+        ai_status: str = "ready",
+        vitals: Optional[Dict[str, Any]] = None,
+        imputed_fields: Optional[List[str]] = None
     ) -> TriageResult:
         """
         Evaluates clinical evidence and generates a transparent, auditable TriageResult.
-        Combines deterministic protocol safety checks with MedGemma model-reasoned urgency signals.
+        Combines deterministic protocol safety checks with MedGemma model-reasoned urgency signals
+        and continuous vital signs thresholds (SpO2, SBP, HR, Temp).
         """
-        # 1. Check for AI / System Failure
+        # Compute LightGBM ML urgency prediction alongside deterministic rules
+        ml_prediction = "P3"
+        ml_conf = 0.0
+        try:
+            res = predict_urgency_lgbm(evidence_state, vitals)
+            ml_prediction = str(res)
+            ml_conf = float(res.get("ml_confidence", 0.0)) if isinstance(res, dict) else 0.0
+        except Exception as e:
+            logger.warning(f"Error computing LightGBM prediction in triage engine: {e}")
+
+        # Tier 4: Check for AI / System Failure
         if ai_status == "failed":
             logger.warning("AI status is 'failed'. Triage defaulting to ERR.")
             return TriageResult(
                 priority_category="ERR",
+                rule_based_priority="ERR",
+                rule_based_triage="ERR",
+                ml_model_priority=ml_prediction,
+                ml_model_triage=ml_prediction,
+                ml_confidence=ml_conf,
                 priority_label="⚠️ Review Required — AI Unavailable",
                 reasons=["AI model service or schema validation failed. Manual clinician review mandatory."],
                 warning_signs=["System failure: AI-extracted evidence unavailable."],
@@ -178,17 +308,31 @@ class DeterministicTriageEngine:
                 ],
                 missing_information=["Full automated clinical extraction"],
                 uncertainties=["All fields require manual clinician assessment"],
-                triage_rule_version=self.PROTOCOL_VERSION
+                triage_rule_version=self.PROTOCOL_VERSION,
+                decision_path="system_fallback"
             )
 
         all_patient_text = " ".join(raw_messages).lower()
         model_urgency_signals = evidence_state.get("urgency_signals", [])
 
-        triggered_rules: List[TriageTrigger] = []
-        warning_signs: List[str] = []
-        reasons: List[str] = []
+        # Resolve continuous vitals and imputed fields if not explicitly provided
+        from backend.ml_triage_service import extract_vitals_with_metadata
+        if vitals is not None and imputed_fields is not None:
+            active_vitals = vitals
+            active_imputed = imputed_fields
+        else:
+            active_vitals_input = vitals if vitals is not None else evidence_state.get("vitals")
+            active_vitals, active_imputed = extract_vitals_with_metadata(active_vitals_input, all_patient_text)
 
-        # 2. Check Model-Reasoned Emergency Signals (MedGemma Semantic Red Flags)
+        # -------------------------------------------------------------
+        # P0 Evaluation (Emergency Life Threats)
+        # -------------------------------------------------------------
+        model_p0_triggers: List[TriageTrigger] = []
+        protocol_p0_triggers: List[TriageTrigger] = []
+        p0_warning_signs: List[str] = []
+        p0_reasons: List[str] = []
+
+        # Tier 1: Model-Reasoned Emergency Signals (MedGemma Semantic Red Flags)
         for sig in model_urgency_signals:
             if isinstance(sig, dict) and sig.get("severity_level") == "emergency":
                 sig_name = sig.get("signal", "Critical Red Flag")
@@ -202,11 +346,11 @@ class DeterministicTriageEngine:
                     matched_evidence=f"Patient stated: '{sig_quote[:120]}'",
                     action_protocol="Immediate clinical emergency escalation."
                 )
-                triggered_rules.append(trigger)
-                warning_signs.append(f"AI Red Flag: {sig_name}")
-                reasons.append(f"AI identified emergency signal ({sig_name}): {sig_rationale}")
+                model_p0_triggers.append(trigger)
+                p0_warning_signs.append(f"AI Red Flag: {sig_name}")
+                p0_reasons.append(f"AI identified emergency signal ({sig_name}): {sig_rationale}")
 
-        # 3. Check Protocol-Based P0 Emergency Rules
+        # Tier 3: Protocol Safety Guardrail P0 Emergency Rules
         for rule in self.P0_RULES:
             for match in re.finditer(rule["pattern"], all_patient_text):
                 if self._is_negated(match, all_patient_text):
@@ -221,24 +365,88 @@ class DeterministicTriageEngine:
                     matched_evidence=f"Patient stated: '{source_msg[:120]}'",
                     action_protocol=rule["action"]
                 )
-                triggered_rules.append(trigger)
-                warning_signs.append(f"{rule['name']}: {rule['criterion']}")
-                reasons.append(f"Triggered {rule['id']} ({rule['name']}): '{source_msg[:90]}'")
+                protocol_p0_triggers.append(trigger)
+                p0_warning_signs.append(f"{rule['name']}: {rule['criterion']}")
+                p0_reasons.append(f"Triggered {rule['id']} ({rule['name']}): '{source_msg[:90]}'")
                 break
 
-        if triggered_rules:
+        # 3b. Check Continuous Vital Signs Red Flags (ESI Level 1 / Critical Life Threats)
+        # Only evaluate explicit/measured vitals (not imputed defaults)
+        if "spo2_pct" not in active_imputed:
+            spo2 = active_vitals.get("spo2_pct")
+            if spo2 is not None and 40 <= spo2 < 92:
+                trigger = TriageTrigger(
+                    rule_id="RULE-P0-VITAL-SPO2",
+                    rule_name="Critical Hypoxemia (SpO2 < 92%)",
+                    priority="P0",
+                    criterion=f"Oxygen saturation SpO2 of {spo2}% is below critical threshold of 92%",
+                    matched_evidence=f"SpO2: {spo2}% (severe hypoxemia)",
+                    action_protocol="Immediate emergency high-flow oxygen therapy, respiratory stabilization, and urgent clinician transfer."
+                )
+                protocol_p0_triggers.append(trigger)
+                p0_warning_signs.append(f"Critical Hypoxemia: SpO2 {spo2}% (<92%)")
+                p0_reasons.append(f"Triggered RULE-P0-VITAL-SPO2 (Critical Hypoxemia): SpO2 {spo2}% is below critical threshold (<92%)")
+
+        if "systolic_bp" not in active_imputed:
+            sbp = active_vitals.get("systolic_bp")
+            if sbp is not None and 30 <= sbp < 90:
+                trigger = TriageTrigger(
+                    rule_id="RULE-P0-VITAL-BP",
+                    rule_name="Hypotensive Shock (Systolic BP < 90 mmHg)",
+                    priority="P0",
+                    criterion=f"Systolic blood pressure of {sbp} mmHg indicates severe circulatory shock",
+                    matched_evidence=f"Systolic BP: {sbp} mmHg (shock)",
+                    action_protocol="Immediate hemodynamic resuscitation, large-bore IV access, fluid challenge, and emergency physician evaluation."
+                )
+                protocol_p0_triggers.append(trigger)
+                p0_warning_signs.append(f"Hypotensive Shock: Systolic BP {sbp} mmHg (<90 mmHg)")
+                p0_reasons.append(f"Triggered RULE-P0-VITAL-BP (Hypotensive Shock): Systolic BP {sbp} mmHg is below critical threshold (<90 mmHg)")
+
+        if "heart_rate" not in active_imputed:
+            hr = active_vitals.get("heart_rate")
+            if hr is not None and hr >= 140:
+                trigger = TriageTrigger(
+                    rule_id="RULE-P0-VITAL-HR",
+                    rule_name="Critical Tachyarrhythmia (Heart Rate >= 140 bpm)",
+                    priority="P0",
+                    criterion=f"Heart rate of {hr} bpm reaches life-threatening tachyarrhythmia threshold (>=140 bpm)",
+                    matched_evidence=f"Heart Rate: {hr} bpm (extreme tachycardia)",
+                    action_protocol="Immediate 12-lead ECG, continuous telemetry monitoring, and emergency cardiology evaluation."
+                )
+                protocol_p0_triggers.append(trigger)
+                p0_warning_signs.append(f"Critical Tachycardia: Heart rate {hr} bpm (>=140 bpm)")
+                p0_reasons.append(f"Triggered RULE-P0-VITAL-HR (Critical Tachycardia): Heart rate {hr} bpm is >= 140 bpm")
+
+        if protocol_p0_triggers or model_p0_triggers:
+            combined_p0 = protocol_p0_triggers + model_p0_triggers
+            dec_path = "model_urgency_reasoning" if (model_p0_triggers and not protocol_p0_triggers) else "protocol_safety_guardrail"
             return TriageResult(
                 priority_category="P0",
+                rule_based_priority="P0",
+                rule_based_triage="P0",
+                ml_model_priority=ml_prediction,
+                ml_model_triage=ml_prediction,
+                ml_confidence=ml_conf,
                 priority_label="🚨 P0: Emergency Escalation",
-                reasons=reasons,
-                warning_signs=warning_signs,
-                triggered_rules=triggered_rules,
+                reasons=p0_reasons,
+                warning_signs=p0_warning_signs,
+                triggered_rules=combined_p0,
                 missing_information=evidence_state.get("missing_information", []),
                 uncertainties=evidence_state.get("uncertainties", []),
-                triage_rule_version=self.PROTOCOL_VERSION
+                triage_rule_version=self.PROTOCOL_VERSION,
+                decision_path=dec_path
             )
 
-        # 4. Evaluate P1 (Urgent) Rules: Check Model-Reasoned Urgent Signals First
+        # -------------------------------------------------------------
+        # P1 Evaluation (Urgent Clinical Acuity)
+        # -------------------------------------------------------------
+        model_p1_triggers: List[TriageTrigger] = []
+        protocol_p1_triggers: List[TriageTrigger] = []
+        acuity_p1_triggers: List[TriageTrigger] = []
+        p1_warning_signs: List[str] = []
+        p1_reasons: List[str] = []
+
+        # Tier 1: Check Model-Reasoned Urgent Signals First
         for sig in model_urgency_signals:
             if isinstance(sig, dict) and sig.get("severity_level") == "urgent":
                 sig_name = sig.get("signal", "Urgent Condition")
@@ -252,11 +460,11 @@ class DeterministicTriageEngine:
                     matched_evidence=f"Patient stated: '{sig_quote[:120]}'",
                     action_protocol="Prompt clinical physician assessment within 1 to 2 hours."
                 )
-                triggered_rules.append(trigger)
-                warning_signs.append(f"AI Urgent Flag: {sig_name}")
-                reasons.append(f"AI identified urgent signal ({sig_name}): {sig_rationale}")
+                model_p1_triggers.append(trigger)
+                p1_warning_signs.append(f"AI Urgent Flag: {sig_name}")
+                p1_reasons.append(f"AI identified urgent signal ({sig_name}): {sig_rationale}")
 
-        # Evaluate Protocol-Based P1 Rules
+        # Tier 3: Evaluate Protocol-Based P1 Rules
         for rule in self.P1_RULES:
             for match in re.finditer(rule["pattern"], all_patient_text):
                 if self._is_negated(match, all_patient_text):
@@ -272,14 +480,15 @@ class DeterministicTriageEngine:
                     matched_evidence=f"Patient stated: '{source_msg[:120]}'",
                     action_protocol=rule["action"]
                 )
-                triggered_rules.append(trigger)
-                warning_signs.append(f"{rule['name']}: {rule['criterion']}")
-                reasons.append(f"Triggered {rule['id']} ({rule['name']}): '{source_msg[:90]}'")
+                protocol_p1_triggers.append(trigger)
+                p1_warning_signs.append(f"{rule['name']}: {rule['criterion']}")
+                p1_reasons.append(f"Triggered {rule['id']} ({rule['name']}): '{source_msg[:90]}'")
                 break
 
-        # Check if patient directly provided standalone severe pain score (e.g. answering severity question with '8', '9', '10')
+        # Tier 2: Multidimensional Clinical Acuity Synthesis
+        # A. Pain Acuity Synthesis: Check standalone high pain scores
         standalone_high_pain = [msg.strip() for msg in raw_messages if msg.strip() in ("8", "9", "10", "8/10", "9/10", "10/10", "10 out of 10", "9 out of 10", "8 out of 10")]
-        if standalone_high_pain and not any(t.rule_id == "RULE-P1-PAIN-02" for t in triggered_rules):
+        if standalone_high_pain and not any(t.rule_id == "RULE-P1-PAIN-02" for t in protocol_p1_triggers + acuity_p1_triggers):
             trigger = TriageTrigger(
                 rule_id="RULE-P1-PAIN-02",
                 rule_name="Severe Uncontrolled Pain",
@@ -288,15 +497,15 @@ class DeterministicTriageEngine:
                 matched_evidence=f"Patient reported pain score: '{standalone_high_pain[-1]}'",
                 action_protocol="Urgent clinical review for acute pain etiology and analgesia."
             )
-            triggered_rules.append(trigger)
-            warning_signs.append("Severe Uncontrolled Pain: Reported pain severity >= 8/10")
-            reasons.append(f"Triggered RULE-P1-PAIN-02 (Severe Uncontrolled Pain): '{standalone_high_pain[-1]}'")
+            acuity_p1_triggers.append(trigger)
+            p1_warning_signs.append("Severe Uncontrolled Pain: Reported pain severity >= 8/10")
+            p1_reasons.append(f"Triggered RULE-P1-PAIN-02 (Severe Uncontrolled Pain): '{standalone_high_pain[-1]}'")
 
-        # Check structured severity fact in evidence_state
+        # B. Pain Acuity Synthesis: Check structured severity fact
         facts = evidence_state.get("facts", {})
         sev_fact = facts.get("severity", {})
         sev_val = str(sev_fact.get("value", "") if isinstance(sev_fact, dict) else sev_fact).lower()
-        if (any(term in sev_val for term in ["8/10", "9/10", "10/10", "severe", "unbearable", "very high"]) or sev_val in ["8", "9", "10"]) and not any(t.rule_id == "RULE-P1-PAIN-02" for t in triggered_rules):
+        if (any(term in sev_val for term in ["8/10", "9/10", "10/10", "severe", "unbearable", "very high"]) or sev_val in ["8", "9", "10"]) and not any(t.rule_id == "RULE-P1-PAIN-02" for t in protocol_p1_triggers + acuity_p1_triggers):
             trigger = TriageTrigger(
                 rule_id="RULE-P1-PAIN-02",
                 rule_name="Severe Uncontrolled Pain",
@@ -305,30 +514,122 @@ class DeterministicTriageEngine:
                 matched_evidence=f"Evidence fact severity: '{sev_val}'",
                 action_protocol="Urgent clinical review for acute pain etiology and analgesia."
             )
-            triggered_rules.append(trigger)
-            warning_signs.append("Severe Uncontrolled Pain: Extracted pain severity >= 8/10 or severe")
-            reasons.append(f"Triggered RULE-P1-PAIN-02 (Severe Uncontrolled Pain): Severity fact '{sev_val}'")
+            acuity_p1_triggers.append(trigger)
+            p1_warning_signs.append("Severe Uncontrolled Pain: Extracted pain severity >= 8/10 or severe")
+            p1_reasons.append(f"Triggered RULE-P1-PAIN-02 (Severe Uncontrolled Pain): Severity fact '{sev_val}'")
 
-        if triggered_rules:
+        # C. Acute Physiological Deterioration Synthesis (onset < 48h + worsening + systemic involvement)
+        onset_str = str(facts.get("onset_and_duration", {}).get("value", "") if isinstance(facts.get("onset_and_duration"), dict) else facts.get("onset_and_duration", "")).lower()
+        prog_str = str(facts.get("progression", {}).get("value", "") if isinstance(facts.get("progression"), dict) else facts.get("progression", "")).lower()
+        is_acute = any(k in onset_str or k in all_patient_text for k in ["today", "yesterday", "hours", "kal", "aaj", "since yesterday"])
+        is_worsening = any(k in prog_str or k in all_patient_text for k in ["worsen", "getting worse", "badh raha", "बढ़ रहा"])
+        has_systemic = any(k in all_patient_text for k in ["fever", "chills", "vomiting", "dizzy", "चक्कर", "उल्टी", "बुखार"])
+        if is_acute and is_worsening and has_systemic and not (model_p1_triggers or protocol_p1_triggers):
+            trigger = TriageTrigger(
+                rule_id="RULE-P1-ACUITY-07",
+                rule_name="Rapid Physiological Deterioration",
+                priority="P1",
+                criterion="Acute onset (< 48h) with progressive worsening and systemic symptoms",
+                matched_evidence=f"Acute timeline with worsening progression in febrile/systemic illness",
+                action_protocol="Urgent physician review to prevent physiological decompensation."
+            )
+            acuity_p1_triggers.append(trigger)
+            p1_warning_signs.append("Rapid Deterioration: Acute onset with clinical worsening")
+            p1_reasons.append("Multi-factor acuity synthesis detected acute onset with clinical deterioration and systemic involvement.")
+
+        # Check Continuous Vital Signs Urgent Indicators (ESI Level 2 / Urgent Acuity)
+        if "heart_rate" not in active_imputed:
+            hr = active_vitals.get("heart_rate")
+            if hr is not None and 130 < hr < 140 and not any(t.rule_id in ("RULE-P0-VITAL-HR", "RULE-P1-VITAL-HR") for t in protocol_p1_triggers):
+                trigger = TriageTrigger(
+                    rule_id="RULE-P1-VITAL-HR",
+                    rule_name="Severe Tachycardia (Heart Rate > 130 bpm)",
+                    priority="P1",
+                    criterion=f"Heart rate of {hr} bpm exceeds safe threshold of 130 bpm",
+                    matched_evidence=f"Heart Rate: {hr} bpm",
+                    action_protocol="Urgent clinical assessment, continuous vital monitoring, and 12-lead ECG within 30-60 minutes."
+                )
+                protocol_p1_triggers.append(trigger)
+                p1_warning_signs.append(f"Severe Tachycardia: Heart rate {hr} bpm (>130 bpm)")
+                p1_reasons.append(f"Triggered RULE-P1-VITAL-HR (Severe Tachycardia): Heart rate {hr} bpm exceeds 130 bpm")
+
+        if "temp_f" not in active_imputed:
+            temp = active_vitals.get("temp_f")
+            if temp is not None and temp > 104.0 and not any(t.rule_id == "RULE-P1-VITAL-TEMP" for t in protocol_p1_triggers):
+                trigger = TriageTrigger(
+                    rule_id="RULE-P1-VITAL-TEMP",
+                    rule_name="Severe Hyperpyrexia (Temperature > 104.0°F)",
+                    priority="P1",
+                    criterion=f"Measured temperature of {temp}°F represents severe hyperpyrexia with neuro/sepsis risk",
+                    matched_evidence=f"Temperature: {temp}°F",
+                    action_protocol="Urgent antipyretic administration, active cooling, sepsis workup, and physician review within 1 hour."
+                )
+                protocol_p1_triggers.append(trigger)
+                p1_warning_signs.append(f"Hyperpyrexia: Temperature {temp}°F (>104.0°F)")
+                p1_reasons.append(f"Triggered RULE-P1-VITAL-TEMP (Hyperpyrexia): Temperature {temp}°F exceeds 104.0°F")
+
+        # Check SLM-extracted severe pain flag
+        slm_features = evidence_state.get("slm_extraction")
+        if not isinstance(slm_features, dict):
+            slm_features = {}
+        symptoms_data = evidence_state.get("symptoms")
+        severe_pain_reported = False
+        if isinstance(symptoms_data, dict):
+            severe_pain_reported = (symptoms_data.get("severe_pain") == "reported")
+        elif isinstance(symptoms_data, list):
+            severe_pain_reported = ("severe_pain" in symptoms_data)
+
+        if (slm_features.get("red_flag_severe_pain") or severe_pain_reported) and not any(t.rule_id == "RULE-P1-PAIN-02" for t in protocol_p1_triggers + acuity_p1_triggers):
+            trigger = TriageTrigger(
+                rule_id="RULE-P1-PAIN-02",
+                rule_name="Severe Uncontrolled Pain",
+                priority="P1",
+                criterion="SLM extracted red_flag_severe_pain=True",
+                matched_evidence="SLM identified severe pain red flag",
+                action_protocol="Urgent clinical review for acute pain etiology and analgesia."
+            )
+            protocol_p1_triggers.append(trigger)
+            p1_warning_signs.append("Severe Uncontrolled Pain: SLM severe pain flag")
+            p1_reasons.append("Triggered RULE-P1-PAIN-02: SLM identified red_flag_severe_pain=True")
+
+        if model_p1_triggers or protocol_p1_triggers or acuity_p1_triggers:
+            combined_p1 = protocol_p1_triggers + model_p1_triggers + acuity_p1_triggers
+            has_protocol_specific_flag = any(t.rule_id in ("RULE-P1-INF-01", "RULE-P1-CARD-05", "RULE-P1-ABD-03", "RULE-P1-RESP-04", "RULE-P1-GI-06") for t in protocol_p1_triggers)
+            if model_p1_triggers:
+                dec_path = "model_urgency_reasoning"
+            elif has_protocol_specific_flag:
+                dec_path = "protocol_safety_guardrail"
+            else:
+                dec_path = "multidimensional_acuity_synthesis"
+
             return TriageResult(
                 priority_category="P1",
+                rule_based_priority="P1",
+                rule_based_triage="P1",
+                ml_model_priority=ml_prediction,
+                ml_model_triage=ml_prediction,
+                ml_confidence=ml_conf,
                 priority_label="⚠️ P1: Urgent Review",
-                reasons=reasons,
-                warning_signs=warning_signs,
-                triggered_rules=triggered_rules,
+                reasons=p1_reasons,
+                warning_signs=p1_warning_signs,
+                triggered_rules=combined_p1,
                 missing_information=evidence_state.get("missing_information", []),
                 uncertainties=evidence_state.get("uncertainties", []),
-                triage_rule_version=self.PROTOCOL_VERSION
+                triage_rule_version=self.PROTOCOL_VERSION,
+                decision_path=dec_path
             )
 
-        # 4. Evaluate P2 (Incomplete or Uncertain)
-        # Check for contradictions, unresolved uncertainties, or multiple unknown dimensions
+        # -------------------------------------------------------------
+        # Tier 2: P2 Evaluation (Incomplete, Uncertain, or Contradictory)
+        # -------------------------------------------------------------
         contradictions = evidence_state.get("contradictions", [])
         uncertainties = evidence_state.get("uncertainties", [])
         missing_info = evidence_state.get("missing_information", [])
         unknowns = evidence_state.get("unknown_information", [])
 
         p2_triggers = []
+        p2_reasons = []
+
         if contradictions:
             p2_triggers.append(
                 TriageTrigger(
@@ -340,7 +641,7 @@ class DeterministicTriageEngine:
                     action_protocol="Clinician callback or targeted re-interview to resolve conflicting reports."
                 )
             )
-            reasons.append(f"Contradictory information present: {'; '.join(contradictions)}")
+            p2_reasons.append(f"Contradictory information present: {'; '.join(contradictions)}")
 
         if uncertainties:
             p2_triggers.append(
@@ -353,7 +654,7 @@ class DeterministicTriageEngine:
                     action_protocol="Reviewer clarification required."
                 )
             )
-            reasons.append(f"High clinical uncertainty: {'; '.join(uncertainties)}")
+            p2_reasons.append(f"High clinical uncertainty: {'; '.join(uncertainties)}")
 
         if len(unknowns) >= 2:
             p2_triggers.append(
@@ -366,23 +667,36 @@ class DeterministicTriageEngine:
                     action_protocol="Clinician callback to complete missing clinical intake history."
                 )
             )
-            reasons.append(f"Multiple unknown clinical dimensions: {len(unknowns)} skipped/unknown items")
+            p2_reasons.append(f"Multiple unknown clinical dimensions: {len(unknowns)} skipped/unknown items")
 
         if p2_triggers:
             return TriageResult(
                 priority_category="P2",
+                rule_based_priority="P2",
+                rule_based_triage="P2",
+                ml_model_priority=ml_prediction,
+                ml_model_triage=ml_prediction,
+                ml_confidence=ml_conf,
                 priority_label="❓ P2: Incomplete or Uncertain",
-                reasons=reasons,
+                reasons=p2_reasons,
                 warning_signs=[],
                 triggered_rules=p2_triggers,
                 missing_information=missing_info,
                 uncertainties=uncertainties,
-                triage_rule_version=self.PROTOCOL_VERSION
+                triage_rule_version=self.PROTOCOL_VERSION,
+                decision_path="multidimensional_acuity_synthesis"
             )
 
-        # 5. Fallback to P3 (Routine Review)
+        # -------------------------------------------------------------
+        # Tier 2: P3 Evaluation (Routine Review)
+        # -------------------------------------------------------------
         return TriageResult(
             priority_category="P3",
+            rule_based_priority="P3",
+            rule_based_triage="P3",
+            ml_model_priority=ml_prediction,
+            ml_model_triage=ml_prediction,
+            ml_confidence=ml_conf,
             priority_label="📋 P3: Routine Review",
             reasons=["No emergency (P0), urgent (P1), or contradictory/uncertain (P2) criteria detected. Patient meets criteria for routine scheduled assessment."],
             warning_signs=[],
@@ -398,7 +712,8 @@ class DeterministicTriageEngine:
             ],
             missing_information=missing_info,
             uncertainties=uncertainties,
-            triage_rule_version=self.PROTOCOL_VERSION
+            triage_rule_version=self.PROTOCOL_VERSION,
+            decision_path="multidimensional_acuity_synthesis"
         )
 
 # Global singleton
